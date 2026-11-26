@@ -32,20 +32,33 @@ Poll interval defaults to 5s (60s for Cloud/FleetAPI, to avoid hammering Tesla's
 | **TEDAPI** (recommended) | Gateway host + the Wi-Fi password from the gateway's QR sticker | Nothing else — works out of the box on Powerwall 2, Powerwall+, and Powerwall 3. |
 | **Hybrid** | The above, plus a Customer Login email/password | Adds supplemental vitals on top of TEDAPI. Requires Customer Login enabled on the gateway. |
 | **Local login** | Gateway host + Customer Login email/password | Requires [Customer Login](https://www.tesla.com/support/energy/powerwall/mobile-app/monitoring-from-home-network) enabled on the gateway first (Tesla app or gateway web UI). |
-| **Cloud mode** | A directory containing a `.pypowerwall.auth` file | One-time setup *outside* Home Assistant: run `python -m pypowerwall setup` (or `setup -headless` if you can't open a browser on the machine) to log into your Tesla account and create that file, then point the integration at its directory. |
+| **Cloud mode (sign in)** | Your Tesla account | Sign in from Home Assistant: the form links to Tesla's login page, and you paste back the "Page Not Found" address Tesla redirects to. The integration saves the tokens to `/config/pypowerwall/.pypowerwall.auth`. See [Cloud sign-in](#cloud-sign-in). |
+| **Cloud mode (existing auth file)** | A directory containing a `.pypowerwall.auth` file | For a file you already have: run `python -m pypowerwall setup` (or `setup -headless` if you can't open a browser on the machine) to log into your Tesla account and create it, then point the integration at its directory. |
 | **FleetAPI** | A directory containing a `.pypowerwall.fleetapi` file | One-time setup outside Home Assistant: register an app at [developer.tesla.com](https://developer.tesla.com), then run `python -m pypowerwall.fleetapi setup` to complete the OAuth flow and create that file. |
 | **TEDAPI v1r LAN** | Gateway host + gateway password and/or customer password (at least one) + an RSA private key path | One-time setup outside Home Assistant: run `python -m pypowerwall register` to generate and register an RSA-4096 key pair with the gateway (may require briefly power-cycling it to confirm), then point the integration at the resulting `.pem` (see pypowerwall's [v1r setup guide](https://github.com/jasonacox/pypowerwall/blob/v0.25.0/README.md#v1r-lan-tedapi-setup---option-5-powerwall-3-wired-lan) and [key states](https://github.com/jasonacox/pypowerwall/blob/v0.25.0/README.md#key-states)). The optional WiFi fallback host is described under [v1r WiFi Fallback](https://github.com/jasonacox/pypowerwall/blob/v0.25.0/README.md#v1r-wifi-fallback). Powerwall 3, and Powerwall 2 with a Gateway 2 (reported working by pypowerwall users on firmware 26.26.4; other gateways untested). If only the gateway password is given, its last 5 characters are used as the customer login password. |
 
 Note: Cloud and FleetAPI modes poll Tesla's cloud API rather than the local gateway, even though the integration as a whole is classified `local_polling` in its manifest (Home Assistant only allows one `iot_class` per integration, and 4 of the 6 connection types above are genuinely local).
 
-The three file-based modes (Cloud, FleetAPI, TEDAPI v1r) authenticate via an artifact pypowerwall's own CLI setup tools produce — Tesla's login flow needs a real browser (or a token you paste in headlessly), so there's no way to complete it from a single Home Assistant form. Run the relevant `setup`/`register` command once, on any machine, then tell the integration where the resulting file lives.
+FleetAPI and TEDAPI v1r authenticate via an artifact pypowerwall's own CLI setup tools produce. Run the relevant `setup`/`register` command once, on any machine, then tell the integration where the resulting file lives. Cloud mode can do the same, or sign in from Home Assistant directly.
+
+### Cloud sign-in
+
+Pick **Cloud mode (sign in with Tesla account)** in the connection menu, then:
+
+1. Open the sign-in link on the form and log in to your Tesla account.
+2. Tesla finishes on a **Page Not Found** page. That's expected: copy the full address from your browser's address bar (it starts with `https://auth.tesla.com/void/callback?code=`).
+3. Paste it into the form. Home Assistant exchanges it for tokens, writes `/config/pypowerwall/.pypowerwall.auth`, and connects.
+
+Each link works once, and a failed attempt shows a fresh one. If Tesla shows an error instead of its login page, the form also has an app-style link that redirects to `tesla://auth/callback?code=...`. Browsers don't display that address, so open the developer tools' Network tab before signing in and copy it from the last redirect.
+
+To sign in again later (for example after the login expired), open the entry's **Reconfigure** and choose **Sign in to Tesla again**. This rewrites the entry's own auth file and reloads it.
 
 For Cloud and FleetAPI, enter the directory **as Home Assistant sees it** (for example `/config/pypowerwall` on Home Assistant OS or a container, not the path on the machine where you ran `setup`). The directory must be writable, because pypowerwall saves refreshed Tesla tokens back into it, and persistent: on Home Assistant OS or a container, keep it under `/config` (or `/share`), since other paths are inside the container and are wiped when Home Assistant updates. Tesla invalidates each refresh token once it's used, so give Home Assistant its own copy of the file rather than sharing one with pypowerwall running elsewhere (each copy's refreshes break the other). Cloud mode is selected by picking "Cloud mode" in the connection menu; no gateway host is needed.
 
 ### Cloud mode troubleshooting
 
 - **"No .pypowerwall.auth … file found"**: the path isn't visible to Home Assistant, or the file is missing. Copy `.pypowerwall.auth` into a directory under `/config` and enter that path.
-- **"Unable to connect to Powerwall (cloud mode)" with a valid file**: the login in the file has probably expired (a log line such as `Login failure - MissingCodeError` means Tesla rejected it). Re-run `python -m pypowerwall setup` and replace the file. A running Cloud entry picks up the new file within about five minutes of its next failed poll, without a restart.
+- **"Unable to connect to Powerwall (cloud mode)" with a valid file**: the login in the file has probably expired (a log line such as `Login failure - MissingCodeError` means Tesla rejected it). Use **Reconfigure → Sign in to Tesla again**, or re-run `python -m pypowerwall setup` and replace the file. A running Cloud entry picks up the new file within about five minutes of its next failed poll, without a restart.
 
 ### Localization
 
@@ -57,6 +70,8 @@ The integration ships a translation file for every language Home Assistant suppo
 | --- | --- | --- |
 | Battery level | sensor | `%`, from customer API scale |
 | Battery level (Tesla app) | sensor | `%`, app-scaled value |
+| Battery full pack energy | sensor | `kWh`, the battery's current full-charge capacity (`nominal_full_pack_energy`, summed over all Powerwalls). Attribute `battery_count`. |
+| Battery health | sensor | `%`, full pack energy ÷ (design capacity × number of Powerwalls). Design capacity per Powerwall is set in the integration's Options (default 13.5 kWh, the rated capacity of Powerwall 2 and 3). This is the battery's own estimate, so it drifts a little with temperature; the long-term trend is the useful part. |
 | Battery reserve | number | `%`, 0-100, writable — sets the backup reserve |
 | Battery mode | select | `self_consumption` / `backup` / `autonomous`, writable — sets the operation mode |
 | Grid charging | switch | writable — allow/disallow charging the battery from the grid. **Cloud, FleetAPI and TEDAPI v1r LAN modes only** (in v1r it is a config write to the gateway over the LAN, no cloud account needed). |

@@ -52,6 +52,7 @@ async def test_menu_shown(hass: HomeAssistant) -> None:
         CONN_TYPE_TEDAPI,
         CONN_TYPE_HYBRID,
         CONN_TYPE_LOCAL,
+        "cloud_login",
         CONN_TYPE_CLOUD,
         CONN_TYPE_FLEETAPI,
         CONN_TYPE_TEDAPI_V1R,
@@ -237,12 +238,219 @@ async def test_reconfigure_cloud_rejects_a_missing_auth_file(
     entry.add_to_hass(hass)
 
     result = await entry.start_reconfigure_flow(hass)
+    assert result["type"] == "menu"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_settings"}
+    )
+    assert result["type"] == "form"
     result2 = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_AUTHPATH: str(tmp_path)}
     )
 
     assert result2["type"] == "form"
     assert result2["errors"] == {"base": "auth_cache_not_found"}
+
+
+EXCHANGE_TARGET = "custom_components.pypowerwall.config_flow.exchange_code"
+
+
+def _fake_tokens(email: str | None = "owner@example.com") -> dict:
+    import base64
+    import json
+
+    claims = {"email": email} if email else {}
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
+    return {
+        "access_token": "at",
+        "refresh_token": "rt",
+        "id_token": f"h.{payload}.s",
+        "expires_in": 28800,
+    }
+
+
+def _callback_for(result, scheme_prefix="https://auth.tesla.com/void/callback") -> str:
+    from urllib.parse import parse_qs, urlparse
+
+    state = parse_qs(urlparse(result["description_placeholders"]["login_url"]).query)["state"][0]
+    return f"{scheme_prefix}?code=abc123&state={state}&issuer=x"
+
+
+async def _start_cloud_login(hass: HomeAssistant, tmp_path):
+    hass.config.config_dir = str(tmp_path)
+    result = await _select_menu(hass, await _start_menu(hass), "cloud_login")
+    assert result["type"] == "form"
+    assert result["step_id"] == "cloud_login"
+    assert result["description_placeholders"]["login_url"].startswith(
+        "https://auth.tesla.com/oauth2/v3/authorize?"
+    )
+    return result
+
+
+async def test_cloud_login_flow_success(hass: HomeAssistant, tmp_path) -> None:
+    import json
+
+    result = await _start_cloud_login(hass, tmp_path)
+    with (
+        patch(EXCHANGE_TARGET, return_value=_fake_tokens()) as exchange,
+        patch(CONNECT_TARGET, return_value=make_fake_pw(site_name="Cloud Site")) as powerwall,
+    ):
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"callback_url": _callback_for(result)}
+        )
+
+    authpath = str(tmp_path / "pypowerwall")
+    assert result2["type"] == "create_entry"
+    assert result2["title"] == "Cloud Site"
+    assert result2["data"] == {CONF_CONN_TYPE: CONN_TYPE_CLOUD, CONF_AUTHPATH: authpath}
+    assert exchange.call_args.args[0] == "abc123"
+    assert exchange.call_args.args[2] == "https://auth.tesla.com/void/callback"
+    saved = json.loads((tmp_path / "pypowerwall" / ".pypowerwall.auth").read_text())
+    assert list(saved) == ["owner@example.com"]
+    assert saved["owner@example.com"]["sso"]["access_token"] == "at"
+    assert saved["owner@example.com"]["sso"]["refresh_token"] == "rt"
+    assert powerwall.call_args.kwargs["email"] == "owner@example.com"
+    assert powerwall.call_args.kwargs["cloudmode"] is True
+
+
+async def test_cloud_login_app_redirect_uses_app_redirect_uri(
+    hass: HomeAssistant, tmp_path
+) -> None:
+    result = await _start_cloud_login(hass, tmp_path)
+    with (
+        patch(EXCHANGE_TARGET, return_value=_fake_tokens()) as exchange,
+        patch(CONNECT_TARGET, return_value=make_fake_pw()),
+    ):
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {"callback_url": _callback_for(result, "tesla://auth/callback")},
+        )
+
+    assert result2["type"] == "create_entry"
+    assert exchange.call_args.args[2] == "tesla://auth/callback"
+
+
+@pytest.mark.parametrize(
+    ("callback", "error"),
+    [
+        ("not a url", "invalid_callback"),
+        ("https://auth.tesla.com/void/callback?code=abc&state=wrong", "state_mismatch"),
+    ],
+)
+async def test_cloud_login_rejects_bad_callback(
+    hass: HomeAssistant, tmp_path, callback: str, error: str
+) -> None:
+    result = await _start_cloud_login(hass, tmp_path)
+    with patch(EXCHANGE_TARGET) as exchange:
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"callback_url": callback}
+        )
+
+    assert result2["type"] == "form"
+    assert result2["errors"] == {"base": error}
+    exchange.assert_not_called()
+    assert (
+        result2["description_placeholders"]["login_url"]
+        != result["description_placeholders"]["login_url"]
+    )
+
+
+async def test_cloud_login_token_exchange_failure(hass: HomeAssistant, tmp_path) -> None:
+    from custom_components.pypowerwall.cloud_auth import TokenExchangeError
+
+    result = await _start_cloud_login(hass, tmp_path)
+    with patch(EXCHANGE_TARGET, side_effect=TokenExchangeError("HTTP 401")):
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"callback_url": _callback_for(result)}
+        )
+
+    assert result2["errors"] == {"base": "login_failed"}
+    assert not (tmp_path / "pypowerwall").exists()
+
+
+async def test_cloud_login_tokens_without_email(hass: HomeAssistant, tmp_path) -> None:
+    result = await _start_cloud_login(hass, tmp_path)
+    with patch(EXCHANGE_TARGET, return_value=_fake_tokens(email=None)):
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"callback_url": _callback_for(result)}
+        )
+
+    assert result2["errors"] == {"base": "login_failed"}
+
+
+async def test_cloud_login_cannot_connect(hass: HomeAssistant, tmp_path) -> None:
+    result = await _start_cloud_login(hass, tmp_path)
+    with (
+        patch(EXCHANGE_TARGET, return_value=_fake_tokens()),
+        patch(CONNECT_TARGET, return_value=make_fake_pw(connected=False)),
+    ):
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"callback_url": _callback_for(result)}
+        )
+
+    assert result2["errors"] == {"base": "cannot_connect"}
+
+
+async def test_reconfigure_cloud_sign_in_again(hass: HomeAssistant, tmp_path) -> None:
+    import json
+
+    authpath = tmp_path / "existing"
+    authpath.mkdir()
+    (authpath / ".pypowerwall.auth").write_text(json.dumps({"old@example.com": {}}))
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=DIN,
+        data={CONF_CONN_TYPE: CONN_TYPE_CLOUD, CONF_AUTHPATH: str(authpath), "siteid": "123"},
+    )
+    entry.add_to_hass(hass)
+
+    result = await entry.start_reconfigure_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_cloud_login"}
+    )
+    assert result["step_id"] == "reconfigure_cloud_login"
+    with (
+        patch(EXCHANGE_TARGET, return_value=_fake_tokens()),
+        patch(CONNECT_TARGET, return_value=make_fake_pw()) as powerwall,
+    ):
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"callback_url": _callback_for(result)}
+        )
+
+    assert result2["type"] == "abort"
+    assert result2["reason"] == "reconfigure_successful"
+    assert entry.data == {
+        CONF_CONN_TYPE: CONN_TYPE_CLOUD,
+        CONF_AUTHPATH: str(authpath),
+        "siteid": "123",
+    }
+    saved = json.loads((authpath / ".pypowerwall.auth").read_text())
+    assert list(saved) == ["owner@example.com"]
+    assert powerwall.call_args.kwargs["siteid"] == "123"
+
+
+async def test_reconfigure_cloud_sign_in_wrong_gateway(hass: HomeAssistant, tmp_path) -> None:
+    authpath = tmp_path / "existing"
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=DIN,
+        data={CONF_CONN_TYPE: CONN_TYPE_CLOUD, CONF_AUTHPATH: str(authpath)},
+    )
+    entry.add_to_hass(hass)
+
+    result = await entry.start_reconfigure_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_cloud_login"}
+    )
+    with (
+        patch(EXCHANGE_TARGET, return_value=_fake_tokens()),
+        patch(CONNECT_TARGET, return_value=make_fake_pw(din="OTHER-DIN")),
+    ):
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"callback_url": _callback_for(result)}
+        )
+
+    assert result2["type"] == "abort"
+    assert result2["reason"] == "wrong_gateway"
 
 
 def _rsa_key(tmp_path) -> str:
