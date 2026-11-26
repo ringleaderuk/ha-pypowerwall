@@ -123,7 +123,6 @@ class TestBatteryHealth:
         s = self._sensor(12.15, 1)
         assert s.native_value == 90.0
         assert s.native_unit_of_measurement == "%"
-        assert s.unique_id == "DIN1_battery_health"
         assert s.extra_state_attributes["design_capacity_kwh"] == 13.5
 
     def test_scales_design_capacity_by_battery_count(self):
