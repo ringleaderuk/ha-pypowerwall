@@ -278,6 +278,7 @@ class PypowerwallConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_show_menu(
                 step_id="reconfigure",
                 menu_options=[STEP_RECONFIGURE_CLOUD_LOGIN, STEP_RECONFIGURE_SETTINGS],
+                description_placeholders={"conn_type": conn_type},
             )
         return await self._async_reconfigure_form(user_input)
 
@@ -374,9 +375,9 @@ class PypowerwallConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             login = self._login
             try:
-                code, redirect_uri = parse_callback(user_input[CONF_CALLBACK_URL], login.state)
+                code = parse_callback(user_input[CONF_CALLBACK_URL], login.state)
                 tokens = await self.hass.async_add_executor_job(
-                    exchange_code, code, login.code_verifier, redirect_uri
+                    exchange_code, code, login.code_verifier
                 )
                 email = email_from_tokens(tokens)
                 if not email:
@@ -414,10 +415,7 @@ class PypowerwallConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id=step_id,
             data_schema=STEP_CLOUD_LOGIN_SCHEMA,
             errors=errors,
-            description_placeholders={
-                "login_url": self._login.url,
-                "app_login_url": self._login.app_url,
-            },
+            description_placeholders={"login_url": self._login.url},
         )
 
     async def async_step_fleetapi(

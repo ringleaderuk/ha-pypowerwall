@@ -9,8 +9,7 @@ import httpx
 import pytest
 
 from custom_components.pypowerwall.cloud_auth import (
-    REDIRECT_URI_APP,
-    REDIRECT_URI_WEB,
+    REDIRECT_URI,
     InvalidCallbackError,
     StateMismatchError,
     TokenExchangeError,
@@ -27,15 +26,14 @@ def _query(url: str) -> dict[str, str]:
 
 
 class TestNewLoginRequest:
-    def test_links_share_pkce_and_state_but_not_redirect(self):
+    def test_link_uses_app_redirect_and_pkce(self):
         login = new_login_request()
-        web, app = _query(login.url), _query(login.app_url)
-        assert web["redirect_uri"] == REDIRECT_URI_WEB
-        assert app["redirect_uri"] == REDIRECT_URI_APP
-        assert web["state"] == app["state"] == login.state
-        assert web["code_challenge"] == app["code_challenge"]
-        assert web["client_id"] == "ownerapi"
-        assert web["code_challenge_method"] == "S256"
+        query = _query(login.url)
+        assert login.url.startswith("https://auth.tesla.com/oauth2/v3/authorize?")
+        assert query["redirect_uri"] == REDIRECT_URI == "tesla://auth/callback"
+        assert query["state"] == login.state
+        assert query["client_id"] == "ownerapi"
+        assert query["code_challenge_method"] == "S256"
 
     def test_challenge_is_s256_of_verifier(self):
         login = new_login_request()
@@ -51,26 +49,35 @@ class TestNewLoginRequest:
 
 
 class TestParseCallback:
-    def test_web_callback(self):
-        url = "  https://auth.tesla.com/void/callback?code=abc&state=s1&issuer=x \n"
-        assert parse_callback(url, "s1") == ("abc", REDIRECT_URI_WEB)
+    def test_bare_callback_url(self):
+        url = "  tesla://auth/callback?code=abc&state=s1&issuer=x \n"
+        assert parse_callback(url, "s1") == "abc"
 
-    def test_app_callback(self):
-        assert parse_callback("tesla://auth/callback?code=abc&state=s1", "s1") == (
-            "abc",
-            REDIRECT_URI_APP,
+    def test_chrome_console_line(self):
+        line = (
+            "Failed to launch 'tesla://auth/callback?code=NA_abc123&state=s1"
+            "&issuer=https%3A%2F%2Fauth.tesla.com%2Foauth2%2Fv3' because the scheme"
+            " does not have a registered handler."
         )
+        assert parse_callback(line, "s1") == "NA_abc123"
 
-    @pytest.mark.parametrize(
-        "url", ["", "hello", "https://auth.tesla.com/void/callback?state=s1"]
-    )
+    def test_state_last_and_quoted(self):
+        assert parse_callback("'tesla://auth/callback?code=abc&state=s1'", "s1") == "abc"
+
+    def test_percent_encoded_code(self):
+        assert parse_callback("tesla://auth/callback?code=a%2Bb&state=s1", "s1") == "a+b"
+
+    @pytest.mark.parametrize("url", ["", "hello", "tesla://auth/callback?state=s1"])
     def test_missing_code(self, url):
         with pytest.raises(InvalidCallbackError):
             parse_callback(url, "s1")
 
-    def test_wrong_state(self):
+    @pytest.mark.parametrize(
+        "url", ["tesla://auth/callback?code=abc&state=old", "tesla://auth/callback?code=abc"]
+    )
+    def test_wrong_or_missing_state(self, url):
         with pytest.raises(StateMismatchError):
-            parse_callback("https://auth.tesla.com/void/callback?code=abc&state=old", "s1")
+            parse_callback(url, "s1")
 
 
 def _client_returning(response=None, error=None):
@@ -90,7 +97,7 @@ class TestExchangeCode:
         resp.json.return_value = {"access_token": "at", "refresh_token": "rt"}
         factory, client = _client_returning(resp)
         with patch("custom_components.pypowerwall.cloud_auth.httpx.Client", factory):
-            assert exchange_code("abc", "ver", REDIRECT_URI_WEB)["refresh_token"] == "rt"
+            assert exchange_code("abc", "ver")["refresh_token"] == "rt"
 
         assert factory.call_args.kwargs["http2"] is True
         url = client.post.call_args.args[0]
@@ -101,14 +108,14 @@ class TestExchangeCode:
             "client_id": "ownerapi",
             "code": "abc",
             "code_verifier": "ver",
-            "redirect_uri": REDIRECT_URI_WEB,
+            "redirect_uri": REDIRECT_URI,
         }
 
     def test_rejected(self):
         factory, _ = _client_returning(MagicMock(status_code=401))
         with patch("custom_components.pypowerwall.cloud_auth.httpx.Client", factory):
             with pytest.raises(TokenExchangeError):
-                exchange_code("abc", "ver", REDIRECT_URI_WEB)
+                exchange_code("abc", "ver")
 
     def test_missing_tokens(self):
         resp = MagicMock(status_code=200)
@@ -116,13 +123,13 @@ class TestExchangeCode:
         factory, _ = _client_returning(resp)
         with patch("custom_components.pypowerwall.cloud_auth.httpx.Client", factory):
             with pytest.raises(TokenExchangeError):
-                exchange_code("abc", "ver", REDIRECT_URI_WEB)
+                exchange_code("abc", "ver")
 
     def test_network_error(self):
         factory, _ = _client_returning(error=httpx.ConnectError("down"))
         with patch("custom_components.pypowerwall.cloud_auth.httpx.Client", factory):
             with pytest.raises(TokenExchangeError):
-                exchange_code("abc", "ver", REDIRECT_URI_WEB)
+                exchange_code("abc", "ver")
 
 
 def _id_token(claims: dict) -> str:

@@ -10,11 +10,12 @@ exchange to start a session (pypowerwall's cloud/AUTH.md, RCA-8), so the
 exchanged access token is stored alongside the refresh token rather than
 refreshed straight away.
 
-Tesla redirects to one of two callback URIs, and the token exchange must quote
-the one the login link used. The https one lands on a "Page Not Found" page
-whose URL can be copied from the address bar; the tesla:// one is what
-pypowerwall's own WebView login uses, kept as a fallback in case Tesla stops
-accepting the https one.
+The ownerapi client only accepts the tesla://auth/callback redirect (the older
+https://auth.tesla.com/void/callback one now fails with "redirect_uri not
+registered"). Browsers can't open tesla:// links, but Chrome and Edge log the
+full callback URL in the developer tools console ("Failed to launch
+'tesla://auth/callback?code=...'"), so parse_callback accepts that whole line
+as well as the bare URL.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import time
 import urllib.parse
@@ -35,8 +37,7 @@ from pypowerwall.tesla_auth import _httpx_auth_verify
 AUTH_HOST = "https://auth.tesla.com"
 CLIENT_ID = "ownerapi"
 SCOPES = "openid email offline_access"
-REDIRECT_URI_WEB = "https://auth.tesla.com/void/callback"
-REDIRECT_URI_APP = "tesla://auth/callback"
+REDIRECT_URI = "tesla://auth/callback"
 AUTH_FILENAME = ".pypowerwall.auth"
 
 
@@ -60,20 +61,19 @@ class TokenExchangeError(CloudAuthError):
 
 @dataclass(frozen=True)
 class LoginRequest:
-    """One sign-in attempt: the PKCE secret and the links that share it."""
+    """One sign-in attempt: the PKCE secret and the login link built from it."""
 
     code_verifier: str
     state: str
     url: str
-    app_url: str
 
 
-def _authorize_url(code_challenge: str, state: str, redirect_uri: str) -> str:
+def _authorize_url(code_challenge: str, state: str) -> str:
     params = {
         "client_id": CLIENT_ID,
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
-        "redirect_uri": redirect_uri,
+        "redirect_uri": REDIRECT_URI,
         "response_type": "code",
         "scope": SCOPES,
         "state": state,
@@ -92,27 +92,26 @@ def new_login_request() -> LoginRequest:
     return LoginRequest(
         code_verifier=code_verifier,
         state=state,
-        url=_authorize_url(code_challenge, state, REDIRECT_URI_WEB),
-        app_url=_authorize_url(code_challenge, state, REDIRECT_URI_APP),
+        url=_authorize_url(code_challenge, state),
     )
 
 
-def parse_callback(callback_url: str, expected_state: str) -> tuple[str, str]:
-    """Return (code, redirect_uri) from the URL Tesla redirected to after login."""
-    text = callback_url.strip()
-    parsed = urllib.parse.urlparse(text)
-    query = urllib.parse.parse_qs(parsed.query)
-    code = (query.get("code") or [None])[0]
+def _query_value(text: str, name: str) -> str | None:
+    match = re.search(rf"[?&]{name}=([^&\s'\"]+)", text)
+    return urllib.parse.unquote(match.group(1)) if match else None
+
+
+def parse_callback(pasted: str, expected_state: str) -> str:
+    """Return the authorization code from the callback URL, or a console line containing it."""
+    code = _query_value(pasted, "code")
     if not code:
         raise InvalidCallbackError
-    state = (query.get("state") or [None])[0]
-    if state != expected_state:
+    if _query_value(pasted, "state") != expected_state:
         raise StateMismatchError
-    redirect_uri = REDIRECT_URI_APP if parsed.scheme == "tesla" else REDIRECT_URI_WEB
-    return code, redirect_uri
+    return code
 
 
-def exchange_code(code: str, code_verifier: str, redirect_uri: str) -> dict:
+def exchange_code(code: str, code_verifier: str) -> dict:
     """Swap the authorization code for tokens. Blocking; run in the executor.
 
     HTTP/2 with pypowerwall's TLS settings, as Tesla's token endpoint rejects
@@ -123,7 +122,7 @@ def exchange_code(code: str, code_verifier: str, redirect_uri: str) -> dict:
         "client_id": CLIENT_ID,
         "code": code,
         "code_verifier": code_verifier,
-        "redirect_uri": redirect_uri,
+        "redirect_uri": REDIRECT_URI,
     }
     try:
         with httpx.Client(http2=True, verify=_httpx_auth_verify()) as client:

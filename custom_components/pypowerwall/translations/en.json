@@ -54,12 +54,12 @@
       },
       "cloud_login": {
         "title": "Sign in to Tesla",
-        "description": "1. [Sign in to your Tesla account]({login_url}) (opens Tesla's login page).\n2. After you sign in, Tesla shows a **Page Not Found** page. That's expected.\n3. Copy the full address of that page from your browser's address bar (it starts with `https://auth.tesla.com/void/callback?code=`) and paste it below.\n\nThe link works once. If anything goes wrong, a fresh link is shown.\n\nIf Tesla shows an error instead of its login page, use the [app-style sign-in link]({app_login_url}) instead. Your browser won't show a page at the end, so open your browser's developer tools (Network tab) before signing in, then copy the `tesla://auth/callback?code=...` address from the last redirect.",
+        "description": "Use Chrome or Edge on a computer.\n\n1. Open [Tesla's sign-in page]({login_url}).\n2. On that tab, press **F12** and choose the **Console** tab in the panel that opens.\n3. Sign in to your Tesla account. When you finish, the page won't change. That's expected.\n4. The Console shows a red line starting `Failed to launch 'tesla://auth/callback?code=`. Copy that whole line and paste it below.\n\nPaste it within a few minutes. The link works once, so if anything goes wrong a fresh one is shown.",
         "data": {
-          "callback_url": "Page Not Found address"
+          "callback_url": "Console line or callback address"
         },
         "data_description": {
-          "callback_url": "The full URL Tesla redirected you to after signing in"
+          "callback_url": "The whole `Failed to launch 'tesla://auth/callback?code=...'` line, or just the tesla:// address in it"
         }
       },
       "cloud": {
@@ -131,12 +131,12 @@
       },
       "reconfigure_cloud_login": {
         "title": "Sign in to Tesla again",
-        "description": "Replaces this entry's saved Tesla login, for example after it expired.\n\n1. [Sign in to your Tesla account]({login_url}) (opens Tesla's login page).\n2. After you sign in, Tesla shows a **Page Not Found** page. That's expected.\n3. Copy the full address of that page from your browser's address bar (it starts with `https://auth.tesla.com/void/callback?code=`) and paste it below.\n\nThe link works once. If anything goes wrong, a fresh link is shown.\n\nIf Tesla shows an error instead of its login page, use the [app-style sign-in link]({app_login_url}) instead. Your browser won't show a page at the end, so open your browser's developer tools (Network tab) before signing in, then copy the `tesla://auth/callback?code=...` address from the last redirect.",
+        "description": "Replaces this entry's saved Tesla login, for example after it expired.\n\nUse Chrome or Edge on a computer.\n\n1. Open [Tesla's sign-in page]({login_url}).\n2. On that tab, press **F12** and choose the **Console** tab in the panel that opens.\n3. Sign in to your Tesla account. When you finish, the page won't change. That's expected.\n4. The Console shows a red line starting `Failed to launch 'tesla://auth/callback?code=`. Copy that whole line and paste it below.\n\nPaste it within a few minutes. The link works once, so if anything goes wrong a fresh one is shown.",
         "data": {
-          "callback_url": "Page Not Found address"
+          "callback_url": "Console line or callback address"
         },
         "data_description": {
-          "callback_url": "The full URL Tesla redirected you to after signing in"
+          "callback_url": "The whole `Failed to launch 'tesla://auth/callback?code=...'` line, or just the tesla:// address in it"
         }
       }
     },
@@ -144,7 +144,7 @@
       "auth_cache_not_found": "No .pypowerwall.auth (Cloud) or .pypowerwall.fleetapi (FleetAPI) file found in that directory. Enter the path as Home Assistant sees it, for example /config/pypowerwall.",
       "auth_cache_not_writable": "Home Assistant can't write to that directory. It needs write access to save refreshed Tesla tokens.",
       "cannot_connect": "Failed to connect. Check the connection details and try again.",
-      "invalid_callback": "That doesn't look like the address Tesla redirected to. Paste the full URL, including the ?code= part.",
+      "invalid_callback": "No sign-in code found. Paste the whole Console line that contains tesla://auth/callback?code=...",
       "login_failed": "Tesla didn't accept the sign-in. Use the new link and try again. The Home Assistant log has the details.",
       "state_mismatch": "That address came from an older sign-in link. Use the new link and paste the address it leads to.",
       "missing_password": "Enter the gateway password, the customer password, or both.",

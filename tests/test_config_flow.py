@@ -239,6 +239,8 @@ async def test_reconfigure_cloud_rejects_a_missing_auth_file(
 
     result = await entry.start_reconfigure_flow(hass)
     assert result["type"] == "menu"
+    # The menu reuses the reconfigure description, which needs {conn_type}.
+    assert result["description_placeholders"] == {"conn_type": CONN_TYPE_CLOUD}
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"next_step_id": "reconfigure_settings"}
     )
@@ -268,11 +270,14 @@ def _fake_tokens(email: str | None = "owner@example.com") -> dict:
     }
 
 
-def _callback_for(result, scheme_prefix="https://auth.tesla.com/void/callback") -> str:
+def _callback_for(result) -> str:
     from urllib.parse import parse_qs, urlparse
 
     state = parse_qs(urlparse(result["description_placeholders"]["login_url"]).query)["state"][0]
-    return f"{scheme_prefix}?code=abc123&state={state}&issuer=x"
+    return (
+        f"Failed to launch 'tesla://auth/callback?code=abc123&state={state}&issuer=x'"
+        " because the scheme does not have a registered handler."
+    )
 
 
 async def _start_cloud_login(hass: HomeAssistant, tmp_path):
@@ -303,7 +308,6 @@ async def test_cloud_login_flow_success(hass: HomeAssistant, tmp_path) -> None:
     assert result2["title"] == "Cloud Site"
     assert result2["data"] == {CONF_CONN_TYPE: CONN_TYPE_CLOUD, CONF_AUTHPATH: authpath}
     assert exchange.call_args.args[0] == "abc123"
-    assert exchange.call_args.args[2] == "https://auth.tesla.com/void/callback"
     saved = json.loads((tmp_path / "pypowerwall" / ".pypowerwall.auth").read_text())
     assert list(saved) == ["owner@example.com"]
     assert saved["owner@example.com"]["sso"]["access_token"] == "at"
@@ -312,28 +316,11 @@ async def test_cloud_login_flow_success(hass: HomeAssistant, tmp_path) -> None:
     assert powerwall.call_args.kwargs["cloudmode"] is True
 
 
-async def test_cloud_login_app_redirect_uses_app_redirect_uri(
-    hass: HomeAssistant, tmp_path
-) -> None:
-    result = await _start_cloud_login(hass, tmp_path)
-    with (
-        patch(EXCHANGE_TARGET, return_value=_fake_tokens()) as exchange,
-        patch(CONNECT_TARGET, return_value=make_fake_pw()),
-    ):
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {"callback_url": _callback_for(result, "tesla://auth/callback")},
-        )
-
-    assert result2["type"] == "create_entry"
-    assert exchange.call_args.args[2] == "tesla://auth/callback"
-
-
 @pytest.mark.parametrize(
     ("callback", "error"),
     [
         ("not a url", "invalid_callback"),
-        ("https://auth.tesla.com/void/callback?code=abc&state=wrong", "state_mismatch"),
+        ("tesla://auth/callback?code=abc&state=wrong", "state_mismatch"),
     ],
 )
 async def test_cloud_login_rejects_bad_callback(

@@ -32,7 +32,7 @@ Poll interval defaults to 5s (60s for Cloud/FleetAPI, to avoid hammering Tesla's
 | **TEDAPI** (recommended) | Gateway host + the Wi-Fi password from the gateway's QR sticker | Nothing else — works out of the box on Powerwall 2, Powerwall+, and Powerwall 3. |
 | **Hybrid** | The above, plus a Customer Login email/password | Adds supplemental vitals on top of TEDAPI. Requires Customer Login enabled on the gateway. |
 | **Local login** | Gateway host + Customer Login email/password | Requires [Customer Login](https://www.tesla.com/support/energy/powerwall/mobile-app/monitoring-from-home-network) enabled on the gateway first (Tesla app or gateway web UI). |
-| **Cloud mode (sign in)** | Your Tesla account | Sign in from Home Assistant: the form links to Tesla's login page, and you paste back the "Page Not Found" address Tesla redirects to. The integration saves the tokens to `/config/pypowerwall/.pypowerwall.auth`. See [Cloud sign-in](#cloud-sign-in). |
+| **Cloud mode (sign in)** | Your Tesla account | Sign in from Home Assistant: the form links to Tesla's login page, and you paste back the callback line your browser's developer console shows. The integration saves the tokens to `/config/pypowerwall/.pypowerwall.auth`. See [Cloud sign-in](#cloud-sign-in). |
 | **Cloud mode (existing auth file)** | A directory containing a `.pypowerwall.auth` file | For a file you already have: run `python -m pypowerwall setup` (or `setup -headless` if you can't open a browser on the machine) to log into your Tesla account and create it, then point the integration at its directory. |
 | **FleetAPI** | A directory containing a `.pypowerwall.fleetapi` file | One-time setup outside Home Assistant: register an app at [developer.tesla.com](https://developer.tesla.com), then run `python -m pypowerwall.fleetapi setup` to complete the OAuth flow and create that file. |
 | **TEDAPI v1r LAN** | Gateway host + gateway password and/or customer password (at least one) + an RSA private key path | One-time setup outside Home Assistant: run `python -m pypowerwall register` to generate and register an RSA-4096 key pair with the gateway (may require briefly power-cycling it to confirm), then point the integration at the resulting `.pem` (see pypowerwall's [v1r setup guide](https://github.com/jasonacox/pypowerwall/blob/v0.25.0/README.md#v1r-lan-tedapi-setup---option-5-powerwall-3-wired-lan) and [key states](https://github.com/jasonacox/pypowerwall/blob/v0.25.0/README.md#key-states)). The optional WiFi fallback host is described under [v1r WiFi Fallback](https://github.com/jasonacox/pypowerwall/blob/v0.25.0/README.md#v1r-wifi-fallback). Powerwall 3, and Powerwall 2 with a Gateway 2 (reported working by pypowerwall users on firmware 26.26.4; other gateways untested). If only the gateway password is given, its last 5 characters are used as the customer login password. |
@@ -43,13 +43,16 @@ FleetAPI and TEDAPI v1r authenticate via an artifact pypowerwall's own CLI setup
 
 ### Cloud sign-in
 
-Pick **Cloud mode (sign in with Tesla account)** in the connection menu, then:
+Pick **Cloud mode (sign in with Tesla account)** in the connection menu, then, in Chrome or Edge on a computer:
 
-1. Open the sign-in link on the form and log in to your Tesla account.
-2. Tesla finishes on a **Page Not Found** page. That's expected: copy the full address from your browser's address bar (it starts with `https://auth.tesla.com/void/callback?code=`).
-3. Paste it into the form. Home Assistant exchanges it for tokens, writes `/config/pypowerwall/.pypowerwall.auth`, and connects.
+1. Open the sign-in link on the form.
+2. On Tesla's tab, press **F12** and open the **Console** tab.
+3. Log in to your Tesla account. At the end the page doesn't change: Tesla redirects to `tesla://auth/callback?code=...`, which browsers can't open.
+4. The Console shows a red line, `Failed to launch 'tesla://auth/callback?code=...' because the scheme does not have a registered handler.` Copy the whole line and paste it into the form.
 
-Each link works once, and a failed attempt shows a fresh one. If Tesla shows an error instead of its login page, the form also has an app-style link that redirects to `tesla://auth/callback?code=...`. Browsers don't display that address, so open the developer tools' Network tab before signing in and copy it from the last redirect.
+Home Assistant exchanges the code for tokens, writes `/config/pypowerwall/.pypowerwall.auth`, and connects. Paste within a few minutes. Each link works once, and a failed attempt shows a fresh one.
+
+Tesla only accepts the `tesla://` redirect for this login. The older `https://auth.tesla.com/void/callback` "Page Not Found" redirect is rejected with "The 'redirect_uri' supplied is not registered for this 'client_id'".
 
 To sign in again later (for example after the login expired), open the entry's **Reconfigure** and choose **Sign in to Tesla again**. This rewrites the entry's own auth file and reloads it.
 
