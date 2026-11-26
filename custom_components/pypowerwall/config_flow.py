@@ -19,6 +19,7 @@ from .const import (
     CLOUD_CONN_TYPES,
     CONF_AUTHPATH,
     CONF_CONN_TYPE,
+    CONF_DESIGN_CAPACITY,
     CONF_GW_PWD,
     CONF_RSA_KEY_PATH,
     CONF_SITEID,
@@ -29,6 +30,7 @@ from .const import (
     CONN_TYPE_LOCAL,
     CONN_TYPE_TEDAPI,
     CONN_TYPE_TEDAPI_V1R,
+    DEFAULT_DESIGN_CAPACITY_KWH,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL_CLOUD,
     DOMAIN,
@@ -325,7 +327,7 @@ class PypowerwallConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class PypowerwallOptionsFlow(OptionsFlow):
-    """Handle options for pypowerwall (scan interval)."""
+    """Handle options for pypowerwall (scan interval, battery design capacity)."""
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Manage the options."""
@@ -338,11 +340,23 @@ class PypowerwallOptionsFlow(OptionsFlow):
             else DEFAULT_SCAN_INTERVAL
         )
         current = self.config_entry.options.get("scan_interval", default_scan_interval)
+        current_capacity = self.config_entry.options.get(
+            CONF_DESIGN_CAPACITY, DEFAULT_DESIGN_CAPACITY_KWH
+        )
         schema = vol.Schema(
             {
                 vol.Required("scan_interval", default=current): NumberSelector(
                     NumberSelectorConfig(
                         min=MIN_SCAN_INTERVAL, max=300, mode=NumberSelectorMode.BOX
+                    )
+                ),
+                vol.Required(CONF_DESIGN_CAPACITY, default=current_capacity): NumberSelector(
+                    NumberSelectorConfig(
+                        min=1,
+                        max=100,
+                        step=0.1,
+                        unit_of_measurement="kWh",
+                        mode=NumberSelectorMode.BOX,
                     )
                 ),
             }

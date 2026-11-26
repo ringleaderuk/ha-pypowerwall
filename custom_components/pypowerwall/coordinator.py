@@ -70,6 +70,8 @@ class PowerwallData:
     solar_energy_exported: float | None = None
     home_energy_imported: float | None = None
     home_power: float | None = None
+    battery_full_pack_energy: float | None = None
+    battery_count: int | None = None
     temps: dict[str, float] = field(default_factory=dict)
     fans: dict[str, dict[str, float | None]] = field(default_factory=dict)
     alerts: list[str] = field(default_factory=list)
@@ -113,8 +115,24 @@ def _wh_to_kwh(value: float | None) -> float | None:
     return value / 1000
 
 
+def _battery_count(status: dict) -> int | None:
+    count = status.get("available_blocks")
+    if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+        return count
+    blocks = status.get("battery_blocks")
+    if isinstance(blocks, list) and blocks:
+        return len(blocks)
+    return None
+
+
 def _fetch_data(pw: pypowerwall.Powerwall, conn_type: str | None = None) -> PowerwallData:
     grid_status = pw.grid_status()
+    system_status = pw.system_status()
+    if not isinstance(system_status, dict):
+        system_status = {}
+    full_pack_wh = system_status.get("nominal_full_pack_energy")
+    if not isinstance(full_pack_wh, (int, float)) or isinstance(full_pack_wh, bool):
+        full_pack_wh = None
     # verbose=True returns the full /api/meters/aggregates entry for the battery meter
     # (instant_power plus the gateway's own lifetime energy_imported/energy_exported
     # counters in Wh) instead of just the instant_power float -- the same endpoint
@@ -148,6 +166,8 @@ def _fetch_data(pw: pypowerwall.Powerwall, conn_type: str | None = None) -> Powe
         solar_energy_exported=_safe_round(_wh_to_kwh(solar_meter.get("energy_exported")), 3),
         home_energy_imported=_safe_round(_wh_to_kwh(home_meter.get("energy_imported")), 3),
         home_power=_safe_round(home_meter.get("instant_power"), 0),
+        battery_full_pack_energy=_safe_round(_wh_to_kwh(full_pack_wh), 3),
+        battery_count=_battery_count(system_status),
         temps=pw.temps() or {},
         fans=_extract_fans(pw.vitals()),
         alerts=sorted(pw.alerts() or []),

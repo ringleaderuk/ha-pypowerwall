@@ -133,7 +133,11 @@
     "step": {
       "init": {
         "data": {
-          "scan_interval": "Scan interval (seconds)"
+          "scan_interval": "Scan interval (seconds)",
+          "design_capacity_kwh": "Battery design capacity per Powerwall (kWh)"
+        },
+        "data_description": {
+          "design_capacity_kwh": "Original rated capacity of one battery, used as the 100% reference for the Battery health sensor. Powerwall 2 and 3 are 13.5 kWh."
         }
       }
     }
@@ -142,6 +146,8 @@
     "sensor": {
       "battery_level": { "name": "Battery level" },
       "battery_level_app": { "name": "Battery level (Tesla app)" },
+      "battery_full_pack_energy": { "name": "Battery full pack energy" },
+      "battery_health": { "name": "Battery health" },
       "backup_time_remaining": { "name": "Backup time remaining" },
       "grid_power": { "name": "Grid power" },
       "grid_import_power": { "name": "Grid import power" },
