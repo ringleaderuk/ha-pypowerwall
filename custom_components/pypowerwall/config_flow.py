@@ -278,6 +278,7 @@ class PypowerwallConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_show_menu(
                 step_id="reconfigure",
                 menu_options=[STEP_RECONFIGURE_CLOUD_LOGIN, STEP_RECONFIGURE_SETTINGS],
+                description_placeholders={"conn_type": conn_type},
             )
         return await self._async_reconfigure_form(user_input)
 

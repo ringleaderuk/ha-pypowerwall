@@ -239,6 +239,8 @@ async def test_reconfigure_cloud_rejects_a_missing_auth_file(
 
     result = await entry.start_reconfigure_flow(hass)
     assert result["type"] == "menu"
+    # The menu reuses the reconfigure description, which needs {conn_type}.
+    assert result["description_placeholders"] == {"conn_type": CONN_TYPE_CLOUD}
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"next_step_id": "reconfigure_settings"}
     )
