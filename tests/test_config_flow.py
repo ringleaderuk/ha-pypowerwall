@@ -422,6 +422,32 @@ async def test_options_flow_respects_explicit_scan_interval_override(
     assert _scan_interval_default(result) == 15
 
 
+def _design_capacity_default(result) -> float:
+    schema = result["data_schema"].schema
+    (marker,) = (key for key in schema if key == "design_capacity_kwh")
+    return marker.default()
+
+
+async def test_options_flow_design_capacity_default_and_override(
+    hass: HomeAssistant,
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=DIN,
+        data={CONF_CONN_TYPE: CONN_TYPE_TEDAPI, CONF_HOST: "192.168.91.1", CONF_GW_PWD: "secret"},
+    )
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert _design_capacity_default(result) == 13.5
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"scan_interval": 5, "design_capacity_kwh": 14.0}
+    )
+    assert result["type"] == "create_entry"
+    assert entry.options["design_capacity_kwh"] == 14.0
+
+
 def _suggested(result, field: str):
     """The value pre-filled into a form field (HA stores it on the marker's description)."""
     schema = result["data_schema"].schema

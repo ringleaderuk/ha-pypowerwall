@@ -65,6 +65,9 @@ def make_fake_pw(**overrides) -> MagicMock:
         "energy_exported": overrides.get("home_energy_exported_wh", 0),
     }
     pw.home.side_effect = lambda verbose=False, m=home_meter: m if verbose else m["instant_power"]
+    pw.system_status.return_value = overrides.get(
+        "system_status", {"nominal_full_pack_energy": 13000, "available_blocks": 1}
+    )
     pw.temps.return_value = overrides.get("temps", {"TETHC--1": 25.0})
     pw.alerts.return_value = overrides.get("alerts", [])
     pw.get_grid_charging.return_value = overrides.get("grid_charging", True)

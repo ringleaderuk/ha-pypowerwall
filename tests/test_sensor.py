@@ -107,6 +107,40 @@ class TestFanSensor:
         assert s.native_value is None
 
 
+class TestBatteryHealth:
+    def _sensor(self, full_pack, count, design=13.5):
+        from unittest.mock import MagicMock
+
+        from custom_components.pypowerwall.sensor import PowerwallBatteryHealthSensor
+
+        coordinator = MagicMock()
+        coordinator.data = PowerwallData(
+            din="DIN1", battery_full_pack_energy=full_pack, battery_count=count
+        )
+        return PowerwallBatteryHealthSensor(coordinator, design)
+
+    def test_single_battery(self):
+        s = self._sensor(12.15, 1)
+        assert s.native_value == 90.0
+        assert s.native_unit_of_measurement == "%"
+        assert s.unique_id == "DIN1_battery_health"
+        assert s.extra_state_attributes["design_capacity_kwh"] == 13.5
+
+    def test_scales_design_capacity_by_battery_count(self):
+        s = self._sensor(25.65, 2)
+        assert s.native_value == 95.0
+        assert s.extra_state_attributes["design_capacity_kwh"] == 27.0
+
+    def test_unknown_count_assumes_one(self):
+        assert self._sensor(13.5, None).native_value == 100.0
+
+    def test_custom_design_capacity(self):
+        assert self._sensor(13.0, 1, design=14.0).native_value == 92.9
+
+    def test_missing_capacity_is_none(self):
+        assert self._sensor(None, 1).native_value is None
+
+
 class TestAlertAttributes:
     def _sensor(self, key, alerts):
         from unittest.mock import MagicMock

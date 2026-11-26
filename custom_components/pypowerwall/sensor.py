@@ -28,7 +28,12 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
 from . import PypowerwallConfigEntry
-from .const import CONF_CONN_TYPE, TARIFF_CONN_TYPES
+from .const import (
+    CONF_CONN_TYPE,
+    CONF_DESIGN_CAPACITY,
+    DEFAULT_DESIGN_CAPACITY_KWH,
+    TARIFF_CONN_TYPES,
+)
 from .coordinator import FAN_SIGNALS, PowerwallData, PowerwallDataUpdateCoordinator
 from .entity import PowerwallEntity
 
@@ -106,6 +111,14 @@ def _grid_export_power(data: PowerwallData) -> float | None:
     if data.grid_power is None:
         return None
     return max(-data.grid_power, 0)
+
+
+def _battery_health(data: PowerwallData, design_capacity_kwh: float) -> float | None:
+    """Current full-charge capacity as a percentage of the installed design capacity."""
+    if data.battery_full_pack_energy is None or design_capacity_kwh <= 0:
+        return None
+    total_design_kwh = design_capacity_kwh * (data.battery_count or 1)
+    return round(data.battery_full_pack_energy / total_design_kwh * 100, 1)
 
 
 def _trapezoidal_energy_delta_kwh(power1: float, power2: float, elapsed_seconds: float) -> float:
@@ -258,6 +271,16 @@ SENSOR_DESCRIPTIONS: tuple[PowerwallSensorDescription, ...] = (
         value_fn=lambda data: data.home_power,
     ),
     PowerwallSensorDescription(
+        key="battery_full_pack_energy",
+        translation_key="battery_full_pack_energy",
+        device_class=SensorDeviceClass.ENERGY_STORAGE,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        value_fn=lambda data: data.battery_full_pack_energy,
+        attributes_fn=lambda data: {"battery_count": data.battery_count},
+    ),
+    PowerwallSensorDescription(
         key="grid_status",
         translation_key="grid_status",
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -324,6 +347,14 @@ async def async_setup_entry(
     async_add_entities(
         PowerwallSensor(coordinator, description) for description in SENSOR_DESCRIPTIONS
     )
+    async_add_entities(
+        [
+            PowerwallBatteryHealthSensor(
+                coordinator,
+                float(entry.options.get(CONF_DESIGN_CAPACITY, DEFAULT_DESIGN_CAPACITY_KWH)),
+            )
+        ]
+    )
 
     if entry.data[CONF_CONN_TYPE] in TARIFF_CONN_TYPES:
         async_add_entities(
@@ -389,6 +420,37 @@ class PowerwallSensor(PowerwallEntity, SensorEntity):
         if self.entity_description.attributes_fn is None:
             return None
         return self.entity_description.attributes_fn(self.coordinator.data)
+
+
+class PowerwallBatteryHealthSensor(PowerwallEntity, SensorEntity):
+    """Full-charge capacity as a percentage of design capacity (state of health)."""
+
+    _attr_translation_key = "battery_health"
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:battery-heart-variant"
+
+    def __init__(
+        self, coordinator: PowerwallDataUpdateCoordinator, design_capacity_kwh: float
+    ) -> None:
+        super().__init__(coordinator)
+        self._design_capacity_kwh = design_capacity_kwh
+        self._attr_unique_id = f"{self._din}_battery_health"
+
+    @property
+    def native_value(self) -> float | None:
+        return _battery_health(self.coordinator.data, self._design_capacity_kwh)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        data = self.coordinator.data
+        count = data.battery_count or 1
+        return {
+            "full_pack_energy_kwh": data.battery_full_pack_energy,
+            "design_capacity_kwh": round(self._design_capacity_kwh * count, 3),
+            "design_capacity_per_battery_kwh": self._design_capacity_kwh,
+            "battery_count": data.battery_count,
+        }
 
 
 class PowerwallTempSensor(PowerwallEntity, SensorEntity):

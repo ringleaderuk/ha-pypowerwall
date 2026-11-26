@@ -79,6 +79,10 @@ def _make_pw(**overrides):
         "energy_exported": overrides.get("home_energy_exported_wh", 0),
     }
     pw.home.side_effect = lambda verbose=False, m=home_meter: m if verbose else m["instant_power"]
+    pw.system_status.return_value = overrides.get(
+        "system_status",
+        {"nominal_full_pack_energy": 26500.0, "available_blocks": 2},
+    )
     pw.temps.return_value = overrides.get("temps", {"TETHC--abc123": 24.5})
     pw.alerts.return_value = overrides.get("alerts", ["SystemConnectedToGrid"])
     return pw
@@ -225,6 +229,27 @@ class TestFetchData:
         data = _fetch_data(pw, CONN_TYPE_TEDAPI_V1R)
         assert data.grid_charging is False
         assert data.grid_export == "pv_only"
+
+
+class TestBatteryCapacity:
+    def test_full_pack_energy_and_count(self):
+        data = _fetch_data(_make_pw())
+        assert data.battery_full_pack_energy == 26.5
+        assert data.battery_count == 2
+
+    def test_count_falls_back_to_battery_blocks(self):
+        status = {"nominal_full_pack_energy": 13000, "battery_blocks": [{}, {}, {}]}
+        data = _fetch_data(_make_pw(system_status=status))
+        assert data.battery_count == 3
+
+    @pytest.mark.parametrize(
+        "status",
+        [None, {}, {"nominal_full_pack_energy": None}, {"nominal_full_pack_energy": 0}],
+    )
+    def test_missing_capacity_is_none(self, status):
+        data = _fetch_data(_make_pw(system_status=status))
+        assert data.battery_full_pack_energy is None
+        assert data.battery_count is None
 
 
 class TestTariff:

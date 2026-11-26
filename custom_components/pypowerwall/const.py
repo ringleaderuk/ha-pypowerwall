@@ -60,6 +60,13 @@ DEFAULT_SCAN_INTERVAL = 5
 DEFAULT_SCAN_INTERVAL_CLOUD = 60
 MIN_SCAN_INTERVAL = 2
 
+# The gateway reports each pack's current full-charge capacity
+# (nominal_full_pack_energy) but not its original design capacity, so battery
+# health compares against this user-configurable per-pack figure instead.
+# 13.5 kWh is Tesla's rated usable capacity for both Powerwall 2 and 3.
+CONF_DESIGN_CAPACITY = "design_capacity_kwh"
+DEFAULT_DESIGN_CAPACITY_KWH = 13.5
+
 MANUFACTURER = "Tesla"
 
 # pypowerwall.Powerwall()'s own default (5s) is tight for TEDAPI mode against a
