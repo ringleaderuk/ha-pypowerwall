@@ -29,6 +29,7 @@ import urllib.parse
 from dataclasses import dataclass
 
 import httpx
+
 from pypowerwall.tesla_auth import _httpx_auth_verify
 
 AUTH_HOST = "https://auth.tesla.com"
