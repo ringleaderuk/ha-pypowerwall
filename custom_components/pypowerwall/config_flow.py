@@ -14,6 +14,15 @@ from homeassistant.helpers.selector import NumberSelector, NumberSelectorConfig,
 
 import pypowerwall
 
+from .cloud_auth import (
+    CloudAuthError,
+    LoginRequest,
+    email_from_tokens,
+    exchange_code,
+    new_login_request,
+    parse_callback,
+    save_tokens,
+)
 from .const import (
     AUTH_CACHE_FILENAMES,
     CLOUD_CONN_TYPES,
@@ -39,6 +48,15 @@ from .const import (
 from .coordinator import build_powerwall_kwargs
 
 _LOGGER = logging.getLogger(__name__)
+
+STEP_CLOUD_LOGIN = "cloud_login"
+STEP_RECONFIGURE_CLOUD_LOGIN = "reconfigure_cloud_login"
+STEP_RECONFIGURE_SETTINGS = "reconfigure_settings"
+CONF_CALLBACK_URL = "callback_url"
+# Where a new Cloud entry's sign-in writes .pypowerwall.auth, under HA's config dir.
+CLOUD_LOGIN_AUTH_DIR = "pypowerwall"
+
+STEP_CLOUD_LOGIN_SCHEMA = vol.Schema({vol.Required(CONF_CALLBACK_URL): str})
 
 STEP_LOCAL_SCHEMA = vol.Schema(
     {
@@ -93,6 +111,7 @@ MENU_OPTIONS = [
     CONN_TYPE_TEDAPI,
     CONN_TYPE_HYBRID,
     CONN_TYPE_LOCAL,
+    STEP_CLOUD_LOGIN,
     CONN_TYPE_CLOUD,
     CONN_TYPE_FLEETAPI,
     CONN_TYPE_TEDAPI_V1R,
@@ -195,6 +214,9 @@ class PypowerwallConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    def __init__(self) -> None:
+        self._login: LoginRequest | None = None
+
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Let the user pick which pypowerwall connection mode to set up."""
         return self.async_show_menu(step_id="user", menu_options=MENU_OPTIONS)
@@ -252,6 +274,32 @@ class PypowerwallConfigFlow(ConfigFlow, domain=DOMAIN):
         """
         entry = self._get_reconfigure_entry()
         conn_type = entry.data[CONF_CONN_TYPE]
+        if conn_type == CONN_TYPE_CLOUD and user_input is None:
+            return self.async_show_menu(
+                step_id="reconfigure",
+                menu_options=[STEP_RECONFIGURE_CLOUD_LOGIN, STEP_RECONFIGURE_SETTINGS],
+            )
+        return await self._async_reconfigure_form(user_input)
+
+    async def async_step_reconfigure_settings(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Cloud entries: edit the auth directory / site ID by hand."""
+        return await self._async_reconfigure_form(user_input)
+
+    async def async_step_reconfigure_cloud_login(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Cloud entries: sign in to Tesla again, rewriting the entry's auth file."""
+        return await self._async_cloud_login(
+            STEP_RECONFIGURE_CLOUD_LOGIN, user_input, self._get_reconfigure_entry()
+        )
+
+    async def _async_reconfigure_form(
+        self, user_input: dict[str, Any] | None
+    ) -> ConfigFlowResult:
+        entry = self._get_reconfigure_entry()
+        conn_type = entry.data[CONF_CONN_TYPE]
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -302,6 +350,75 @@ class PypowerwallConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_cloud(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Cloud mode: reuses a token cache produced by `python -m pypowerwall setup`."""
         return await self._async_step_connection(CONN_TYPE_CLOUD, STEP_CLOUD_SCHEMA, user_input)
+
+    async def async_step_cloud_login(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Cloud mode, signing in to Tesla from here instead of `pypowerwall setup`."""
+        return await self._async_cloud_login(STEP_CLOUD_LOGIN, user_input, None)
+
+    async def _async_cloud_login(
+        self, step_id: str, user_input: dict[str, Any] | None, entry: ConfigEntry | None
+    ) -> ConfigFlowResult:
+        """Show the Tesla login link, then exchange the pasted callback URL for tokens.
+
+        With an entry (reconfigure) the tokens replace that entry's auth file and
+        the DIN must still match; otherwise they go to CLOUD_LOGIN_AUTH_DIR and a
+        new entry is created. An authorization code works once, so any failure
+        issues a fresh login link.
+        """
+        errors: dict[str, str] = {}
+        if self._login is None:
+            self._login = new_login_request()
+
+        if user_input is not None:
+            login = self._login
+            try:
+                code, redirect_uri = parse_callback(user_input[CONF_CALLBACK_URL], login.state)
+                tokens = await self.hass.async_add_executor_job(
+                    exchange_code, code, login.code_verifier, redirect_uri
+                )
+                email = email_from_tokens(tokens)
+                if not email:
+                    raise CloudAuthError("Tesla's tokens did not include the account email")
+                authpath = (
+                    entry.data[CONF_AUTHPATH]
+                    if entry is not None
+                    else self.hass.config.path(CLOUD_LOGIN_AUTH_DIR)
+                )
+                await self.hass.async_add_executor_job(save_tokens, authpath, email, tokens)
+                data = {CONF_CONN_TYPE: CONN_TYPE_CLOUD, CONF_AUTHPATH: authpath}
+                if entry is not None and entry.data.get(CONF_SITEID):
+                    data[CONF_SITEID] = entry.data[CONF_SITEID]
+                din, site_name = await _validate_input(self.hass, CONN_TYPE_CLOUD, data)
+            except CloudAuthError as err:
+                _LOGGER.warning("Tesla sign-in failed: %s", err)
+                errors["base"] = err.error_key
+            except PowerwallConnectionError:
+                errors["base"] = "cannot_connect"
+            except Exception:  # noqa: BLE001 - surface unexpected errors as a generic failure
+                _LOGGER.exception("Unexpected error during Tesla sign-in")
+                errors["base"] = "unknown"
+            else:
+                await self.async_set_unique_id(din)
+                if entry is not None:
+                    self._abort_if_unique_id_mismatch(reason="wrong_gateway")
+                    return self.async_update_reload_and_abort(entry, data=data)
+                self._abort_if_unique_id_configured()
+                return self.async_create_entry(
+                    title=site_name or f"Powerwall ({CONN_TYPE_CLOUD})", data=data
+                )
+            self._login = new_login_request()
+
+        return self.async_show_form(
+            step_id=step_id,
+            data_schema=STEP_CLOUD_LOGIN_SCHEMA,
+            errors=errors,
+            description_placeholders={
+                "login_url": self._login.url,
+                "app_login_url": self._login.app_url,
+            },
+        )
 
     async def async_step_fleetapi(
         self, user_input: dict[str, Any] | None = None
