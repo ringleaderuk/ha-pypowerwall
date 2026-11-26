@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.15.0](https://github.com/ringleaderuk/ha-pypowerwall/compare/0.14.1...0.15.0) (2026-11-26)
+
+
+### Features
+
+* add battery health and full pack energy sensors ([e471a77](https://github.com/ringleaderuk/ha-pypowerwall/commit/e471a77e6da308957cd815591c5d9b82bc40bc4f))
+* add battery health and full pack energy sensors ([b07c697](https://github.com/ringleaderuk/ha-pypowerwall/commit/b07c6970fe8b89b1f9281f2cd8e296417c277877))
+* sign in to Tesla Cloud from the config flow ([6324bfd](https://github.com/ringleaderuk/ha-pypowerwall/commit/6324bfd2bc74419916fe406fdcdba34611e3dfd3))
+* sign in to Tesla Cloud from the config flow ([98886a5](https://github.com/ringleaderuk/ha-pypowerwall/commit/98886a50452362ad339c7079469bfdbab86cba83))
+
 ## [0.14.1](https://github.com/jackrayner/ha-pypowerwall/compare/0.14.0...0.14.1) (2026-11-26)
 
 
