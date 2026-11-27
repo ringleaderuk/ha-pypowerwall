@@ -840,9 +840,9 @@ async def test_v1r_setup_auto_verified(hass: HomeAssistant, tmp_path) -> None:
     await _finish_gateway(hass, result2, key_path)
 
 
-async def _wait_for_key(hass: HomeAssistant, result, states):
+async def _wait_for_key(hass: HomeAssistant, result, states, interval: float = 0):
     with (
-        patch(f"{V1R_TARGET}.V1R_VERIFY_POLL_INTERVAL", 0),
+        patch(f"{V1R_TARGET}.V1R_VERIFY_POLL_INTERVAL", interval),
         patch(f"{V1R_TARGET}.key_state", side_effect=states),
     ):
         result2 = await hass.config_entries.flow.async_configure(result["flow_id"], {})
@@ -878,8 +878,8 @@ async def test_v1r_setup_not_verified_yet(hass: HomeAssistant, tmp_path) -> None
     result, patches, _ = await _start_v1r_login(hass, tmp_path)
     result2, _ = await _submit_login(hass, result, patches, 1)
 
-    with patch(f"{V1R_TARGET}.V1R_VERIFY_TIMEOUT", 0):
-        result3 = await _wait_for_key(hass, result2, [])
+    with patch(f"{V1R_TARGET}.V1R_VERIFY_TIMEOUT", 0.05):
+        result3 = await _wait_for_key(hass, result2, [1] * 100, interval=0.02)
 
     assert result3["step_id"] == "v1r_verify"
     assert result3["errors"] == {"base": "v1r_not_verified"}
