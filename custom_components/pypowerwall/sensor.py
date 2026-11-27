@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -119,6 +119,51 @@ def _battery_health(data: PowerwallData, design_capacity_kwh: float) -> float | 
         return None
     total_design_kwh = design_capacity_kwh * (data.battery_count or 1)
     return round(data.battery_full_pack_energy / total_design_kwh * 100, 1)
+
+
+# The Tesla app's 0-100% covers the top 95% of the pack (its 0% is 5% raw);
+# battery_level_app and battery_reserve are already on that scale.
+APP_USABLE_FRACTION = 0.95
+MIN_FLOW_W = 50
+# Reported when the battery isn't flowing in the sensor's direction; 0 means done.
+ETA_NOT_APPLICABLE = -1
+
+
+@dataclass(frozen=True)
+class BatteryEta:
+    minutes: int
+    energy_kwh: float
+    target_level: float
+
+
+def _battery_eta(
+    data: PowerwallData, design_capacity_kwh: float, charging: bool
+) -> BatteryEta | None:
+    """Time until the battery reaches 100% (charging) or its floor (discharging).
+
+    The floor is the backup reserve while on grid (the gateway stops discharging
+    there) and the app's 0% when off grid.
+    """
+    level = data.battery_level_app
+    power = data.battery_power
+    if level is None or power is None:
+        return None
+    flow_w = -power if charging else power
+    if flow_w < MIN_FLOW_W:
+        return None
+    capacity_kwh = data.battery_full_pack_energy or design_capacity_kwh * (data.battery_count or 1)
+    if charging:
+        target = 100.0
+        span = target - level
+    else:
+        target = (data.battery_reserve or 0.0) if data.grid_connected is not False else 0.0
+        span = level - target
+    energy_kwh = max(span, 0.0) / 100 * capacity_kwh * APP_USABLE_FRACTION
+    return BatteryEta(
+        minutes=round(energy_kwh * 1000 / flow_w * 60),
+        energy_kwh=round(energy_kwh, 2),
+        target_level=target,
+    )
 
 
 def _trapezoidal_energy_delta_kwh(power1: float, power2: float, elapsed_seconds: float) -> float:
@@ -347,12 +392,14 @@ async def async_setup_entry(
     async_add_entities(
         PowerwallSensor(coordinator, description) for description in SENSOR_DESCRIPTIONS
     )
+    design_capacity_kwh = float(
+        entry.options.get(CONF_DESIGN_CAPACITY, DEFAULT_DESIGN_CAPACITY_KWH)
+    )
     async_add_entities(
         [
-            PowerwallBatteryHealthSensor(
-                coordinator,
-                float(entry.options.get(CONF_DESIGN_CAPACITY, DEFAULT_DESIGN_CAPACITY_KWH)),
-            )
+            PowerwallBatteryHealthSensor(coordinator, design_capacity_kwh),
+            PowerwallBatteryEtaSensor(coordinator, design_capacity_kwh, charging=True),
+            PowerwallBatteryEtaSensor(coordinator, design_capacity_kwh, charging=False),
         ]
     )
 
@@ -450,6 +497,53 @@ class PowerwallBatteryHealthSensor(PowerwallEntity, SensorEntity):
             "design_capacity_kwh": round(self._design_capacity_kwh * count, 3),
             "design_capacity_per_battery_kwh": self._design_capacity_kwh,
             "battery_count": data.battery_count,
+        }
+
+
+class PowerwallBatteryEtaSensor(PowerwallEntity, SensorEntity):
+    """Minutes until the battery is full, or down to its reserve, at the current rate."""
+
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self,
+        coordinator: PowerwallDataUpdateCoordinator,
+        design_capacity_kwh: float,
+        charging: bool,
+    ) -> None:
+        super().__init__(coordinator)
+        self._design_capacity_kwh = design_capacity_kwh
+        self._charging = charging
+        key = "battery_time_to_full" if charging else "battery_time_to_discharged"
+        self._attr_translation_key = key
+        self._attr_unique_id = f"{self._din}_{key}"
+        self._attr_icon = "mdi:battery-clock" if charging else "mdi:battery-clock-outline"
+
+    def _eta(self) -> BatteryEta | None:
+        return _battery_eta(self.coordinator.data, self._design_capacity_kwh, self._charging)
+
+    @property
+    def native_value(self) -> int | None:
+        eta = self._eta()
+        if eta is not None:
+            return eta.minutes
+        data = self.coordinator.data
+        if data.battery_level_app is None or data.battery_power is None:
+            return None
+        return ETA_NOT_APPLICABLE
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        eta = self._eta()
+        if eta is None:
+            return {"finish_time": None, "energy_kwh": None, "target_level": None}
+        finish = dt_util.now() + timedelta(minutes=eta.minutes)
+        return {
+            "finish_time": finish.replace(second=0, microsecond=0).isoformat(),
+            "energy_kwh": eta.energy_kwh,
+            "target_level": eta.target_level,
         }
 
 
