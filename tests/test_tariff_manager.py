@@ -146,10 +146,10 @@ async def test_unchanged_rates_are_not_rewritten(hass: HomeAssistant, tmp_path, 
     await _advance(hass, london, 31)
     assert pw.set_tariff.call_count == 1
 
-    _set_rates(hass, import_bands=[(0, 24, 0.3)])
+    _set_rates(hass, import_bands=[(0, 24, 0.4)])
     await _advance(hass, london, 31)
     assert pw.set_tariff.call_count == 2
-    assert _sent(pw)["energy_charges"]["All year"]["rates"] == {"hour_0_minute_0": 0.3}
+    assert _sent(pw)["energy_charges"]["All year"]["rates"] == {"hour_0_minute_0": 0.4}
 
 
 async def test_export_window_gets_dated_season_and_drops_out_next_day(
