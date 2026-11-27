@@ -26,12 +26,10 @@ from .cloud_auth import (
     parse_callback,
     remove_staging,
     save_tokens,
-    save_tokens_if_absent,
 )
 from .const import (
     AUTH_CACHE_FILENAMES,
     CLOUD_CONN_TYPES,
-    CLOUD_LOGIN_AUTH_DIR,
     CONF_AUTHPATH,
     CONF_CONN_TYPE,
     CONF_DESIGN_CAPACITY,
@@ -68,8 +66,6 @@ _LOGGER = logging.getLogger(__name__)
 STEP_CLOUD_LOGIN = "cloud_login"
 STEP_RECONFIGURE_CLOUD_LOGIN = "reconfigure_cloud_login"
 STEP_RECONFIGURE_SETTINGS = "reconfigure_settings"
-STEP_RECONFIGURE_TESLA_LOGIN = "reconfigure_tesla_login"
-STEP_RECONFIGURE_CONNECTION = "reconfigure_connection"
 STEP_V1R_LOGIN = "v1r_login"
 STEP_V1R_SITE = "v1r_site"
 STEP_V1R_VERIFY = "v1r_verify"
@@ -78,6 +74,9 @@ STEP_V1R_CHECKED = "v1r_checked"
 STEP_V1R_GATEWAY = "v1r_gateway"
 CONF_CALLBACK_URL = "callback_url"
 CONF_ENERGY_SITE = "energy_site"
+# Where a new Cloud entry's sign-in writes .pypowerwall.auth, and where the v1r
+# setup writes its RSA key, under HA's config dir.
+CLOUD_LOGIN_AUTH_DIR = "pypowerwall"
 # How long to watch for VERIFIED after the switch toggle; pypowerwall's
 # documented transition took about a minute.
 V1R_VERIFY_TIMEOUT = 120
@@ -336,27 +335,7 @@ class PypowerwallConfigFlow(ConfigFlow, domain=DOMAIN):
                 menu_options=[STEP_RECONFIGURE_CLOUD_LOGIN, STEP_RECONFIGURE_SETTINGS],
                 description_placeholders={"conn_type": conn_type},
             )
-        if conn_type == CONN_TYPE_TEDAPI_V1R and user_input is None:
-            return self.async_show_menu(
-                step_id="reconfigure",
-                menu_options=[STEP_RECONFIGURE_CONNECTION, STEP_RECONFIGURE_TESLA_LOGIN],
-                description_placeholders={"conn_type": conn_type},
-            )
         return await self._async_reconfigure_form(user_input)
-
-    async def async_step_reconfigure_connection(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """v1r entries: edit the gateway address, passwords and key path."""
-        return await self._async_reconfigure_form(user_input)
-
-    async def async_step_reconfigure_tesla_login(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """v1r entries: sign in to Tesla for the export window actions' tariff writes."""
-        return await self._async_cloud_login(
-            STEP_RECONFIGURE_TESLA_LOGIN, user_input, self._get_reconfigure_entry()
-        )
 
     async def async_step_reconfigure_settings(
         self, user_input: dict[str, Any] | None = None
@@ -441,15 +420,10 @@ class PypowerwallConfigFlow(ConfigFlow, domain=DOMAIN):
 
         With an entry (reconfigure) the tokens replace that entry's auth file and
         the DIN must still match; otherwise they go to CLOUD_LOGIN_AUTH_DIR and a
-        new entry is created. A v1r entry keeps its LAN settings and only gains
-        the auth file, which the export window actions use for tariff writes.
-
-        The tokens are validated from a staging directory and only copied into
-        place once the gateway checks pass, so signing in to the wrong account
-        can't overwrite a working entry's auth file. That validation also uses
-        the new access token straight away, which Tesla requires before it will
-        ever refresh it (pypowerwall's cloud/AUTH.md, RCA-8). An authorization
-        code works once, so any failure issues a fresh login link.
+        new entry is created. The tokens are validated from a staging directory
+        and only copied into place once the gateway checks pass, so signing in
+        to the wrong account can't overwrite a working entry's auth file. An
+        authorization code works once, so any failure issues a fresh login link.
         """
         errors: dict[str, str] = {}
         if self._login is None:
@@ -458,8 +432,10 @@ class PypowerwallConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             login = self._login
             authpath = (
-                entry.data.get(CONF_AUTHPATH) if entry is not None else None
-            ) or self.hass.config.path(CLOUD_LOGIN_AUTH_DIR)
+                entry.data[CONF_AUTHPATH]
+                if entry is not None
+                else self.hass.config.path(CLOUD_LOGIN_AUTH_DIR)
+            )
             staging = self.hass.config.path(
                 CLOUD_LOGIN_AUTH_DIR, f".signin-{secrets.token_hex(4)}"
             )
@@ -495,12 +471,6 @@ class PypowerwallConfigFlow(ConfigFlow, domain=DOMAIN):
                 finally:
                     await self.hass.async_add_executor_job(remove_staging, staging)
                 data[CONF_AUTHPATH] = authpath
-                if entry is not None and entry.data[CONF_CONN_TYPE] == CONN_TYPE_TEDAPI_V1R:
-                    return self.async_update_reload_and_abort(
-                        entry,
-                        data={**entry.data, CONF_AUTHPATH: authpath},
-                        reason="tesla_sign_in_saved",
-                    )
                 if entry is not None:
                     return self.async_update_reload_and_abort(entry, data=data)
                 return self.async_create_entry(
@@ -557,13 +527,6 @@ class PypowerwallConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._v1r_sites = await self.hass.async_add_executor_job(
                     list_energy_sites, self._v1r_token
                 )
-                if email := email_from_tokens(tokens):
-                    await self.hass.async_add_executor_job(
-                        save_tokens_if_absent,
-                        self.hass.config.path(CLOUD_LOGIN_AUTH_DIR),
-                        email,
-                        tokens,
-                    )
             except (CloudAuthError, V1rSetupError) as err:
                 _LOGGER.warning("v1r setup failed: %s", err)
                 errors["base"] = err.error_key

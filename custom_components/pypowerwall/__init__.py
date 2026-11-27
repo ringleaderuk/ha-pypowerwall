@@ -6,28 +6,19 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.helpers import config_validation as cv
 
 from .const import (
     ATTR_DURATION_SECONDS,
-    ATTR_END,
-    ATTR_PRICE,
-    ATTR_START,
     CLOUD_CONN_TYPES,
     CONF_CONN_TYPE,
     CONN_TYPE_TEDAPI_V1R,
-    DEFAULT_EXPORT_WINDOW_PRICE,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL_CLOUD,
     DOMAIN,
     SERVICE_CANCEL_MAX_BACKUP,
-    SERVICE_RESTORE_TARIFF,
     SERVICE_SCHEDULE_MAX_BACKUP,
-    SERVICE_SET_EXPORT_WINDOW,
-    TARIFF_CONTROL_CONN_TYPES,
 )
 from .coordinator import PowerwallDataUpdateCoordinator, async_connect_powerwall
-from .tariff_control import TariffController
 
 PLATFORMS: list[Platform] = [
     Platform.SENSOR,
@@ -44,16 +35,6 @@ SCHEDULE_MAX_BACKUP_SCHEMA = vol.Schema(
     {
         vol.Optional(ATTR_DURATION_SECONDS, default=7200): vol.All(
             vol.Coerce(int), vol.Range(min=1)
-        ),
-    }
-)
-
-SET_EXPORT_WINDOW_SCHEMA = vol.Schema(
-    {
-        vol.Optional(ATTR_START): cv.datetime,
-        vol.Required(ATTR_END): cv.datetime,
-        vol.Optional(ATTR_PRICE, default=DEFAULT_EXPORT_WINDOW_PRICE): vol.All(
-            vol.Coerce(float), vol.Range(min=0.01, max=100)
         ),
     }
 )
@@ -79,8 +60,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: PypowerwallConfigEntry) 
 
     if entry.data[CONF_CONN_TYPE] == CONN_TYPE_TEDAPI_V1R:
         _async_register_v1r_services(hass, entry)
-    if entry.data[CONF_CONN_TYPE] in TARIFF_CONTROL_CONN_TYPES:
-        await _async_setup_tariff_control(hass, entry)
 
     return True
 
@@ -153,47 +132,3 @@ def _async_register_v1r_services(hass: HomeAssistant, entry: PypowerwallConfigEn
             hass.services.async_remove(DOMAIN, SERVICE_CANCEL_MAX_BACKUP)
 
     entry.async_on_unload(_remove_services)
-
-
-async def _async_setup_tariff_control(hass: HomeAssistant, entry: PypowerwallConfigEntry) -> None:
-    """Register the export window actions, which act on the most recently set-up entry.
-
-    Same domain-scoped approach as the v1r services: every loaded entry that can
-    write tariffs is tracked, and the services go once the last one unloads.
-    """
-    controllers: dict[str, TariffController] = hass.data.setdefault(DOMAIN, {}).setdefault(
-        "tariff_controllers", {}
-    )
-    controller = TariffController(hass, entry)
-    controllers[entry.entry_id] = controller
-    await controller.async_start()
-
-    if not hass.services.has_service(DOMAIN, SERVICE_SET_EXPORT_WINDOW):
-
-        def _current() -> TariffController:
-            return next(reversed(controllers.values()))
-
-        async def _set_export_window(call: ServiceCall) -> None:
-            await _current().async_set_export_window(
-                call.data.get(ATTR_START), call.data[ATTR_END], call.data[ATTR_PRICE]
-            )
-
-        async def _restore_tariff(call: ServiceCall) -> None:
-            await _current().async_restore()
-
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_SET_EXPORT_WINDOW,
-            _set_export_window,
-            schema=SET_EXPORT_WINDOW_SCHEMA,
-        )
-        hass.services.async_register(DOMAIN, SERVICE_RESTORE_TARIFF, _restore_tariff)
-
-    def _remove() -> None:
-        controller.async_stop()
-        controllers.pop(entry.entry_id, None)
-        if not controllers:
-            hass.services.async_remove(DOMAIN, SERVICE_SET_EXPORT_WINDOW)
-            hass.services.async_remove(DOMAIN, SERVICE_RESTORE_TARIFF)
-
-    entry.async_on_unload(_remove)
