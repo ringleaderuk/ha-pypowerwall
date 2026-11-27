@@ -501,11 +501,16 @@ class PowerwallBatteryHealthSensor(PowerwallEntity, SensorEntity):
 
 
 class PowerwallBatteryEtaSensor(PowerwallEntity, SensorEntity):
-    """Minutes until the battery is full, or down to its reserve, at the current rate."""
+    """Hours until the battery is full, or down to its reserve, at the current rate.
 
-    _attr_device_class = SensorDeviceClass.DURATION
-    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+    Plain hours like backup_time_remaining, with no duration device class: Home
+    Assistant would otherwise let the unit be switched and convert the -1
+    sentinel along with it.
+    """
+
+    _attr_native_unit_of_measurement = UnitOfTime.HOURS
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 1
 
     def __init__(
         self,
@@ -525,10 +530,10 @@ class PowerwallBatteryEtaSensor(PowerwallEntity, SensorEntity):
         return _battery_eta(self.coordinator.data, self._design_capacity_kwh, self._charging)
 
     @property
-    def native_value(self) -> int | None:
+    def native_value(self) -> float | None:
         eta = self._eta()
         if eta is not None:
-            return eta.minutes
+            return round(eta.minutes / 60, 2)
         data = self.coordinator.data
         if data.battery_level_app is None or data.battery_power is None:
             return None
@@ -538,9 +543,15 @@ class PowerwallBatteryEtaSensor(PowerwallEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, object]:
         eta = self._eta()
         if eta is None:
-            return {"finish_time": None, "energy_kwh": None, "target_level": None}
+            return {
+                "minutes": None,
+                "finish_time": None,
+                "energy_kwh": None,
+                "target_level": None,
+            }
         finish = dt_util.now() + timedelta(minutes=eta.minutes)
         return {
+            "minutes": eta.minutes,
             "finish_time": finish.replace(second=0, microsecond=0).isoformat(),
             "energy_kwh": eta.energy_kwh,
             "target_level": eta.target_level,

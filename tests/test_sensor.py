@@ -204,8 +204,9 @@ class TestBatteryEta:
         coordinator = MagicMock()
         coordinator.data = _eta_data(din="DIN1", battery_power=1140)
         sensor = PowerwallBatteryEtaSensor(coordinator, 13.5, charging=False)
-        assert sensor.native_value == 180
-        assert sensor.native_unit_of_measurement == "min"
+        assert sensor.native_value == 3.0
+        assert sensor.native_unit_of_measurement == "h"
+        assert sensor.extra_state_attributes["minutes"] == 180
         attrs = sensor.extra_state_attributes
         assert attrs["target_level"] == 20.0
         assert attrs["finish_time"] is not None
