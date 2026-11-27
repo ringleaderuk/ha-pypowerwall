@@ -19,6 +19,7 @@ from custom_components.pypowerwall.cloud_auth import (
     new_login_request,
     parse_callback,
     save_tokens,
+    save_tokens_if_absent,
 )
 
 
@@ -178,6 +179,19 @@ class TestSaveTokens:
     def test_owner_only_permissions(self, tmp_path):
         save_tokens(str(tmp_path), "a@b.c", {"access_token": "at", "refresh_token": "rt"})
         assert (tmp_path / ".pypowerwall.auth").stat().st_mode & 0o777 == 0o600
+
+
+class TestSaveTokensIfAbsent:
+    def test_writes_when_missing(self, tmp_path):
+        tokens = {"access_token": "at", "refresh_token": "rt"}
+        assert save_tokens_if_absent(str(tmp_path), "a@b.c", tokens) is True
+        assert list(json.loads((tmp_path / ".pypowerwall.auth").read_text())) == ["a@b.c"]
+
+    def test_leaves_existing_file(self, tmp_path):
+        (tmp_path / ".pypowerwall.auth").write_text(json.dumps({"old@b.c": {}}))
+        tokens = {"access_token": "at", "refresh_token": "rt"}
+        assert save_tokens_if_absent(str(tmp_path), "a@b.c", tokens) is False
+        assert list(json.loads((tmp_path / ".pypowerwall.auth").read_text())) == ["old@b.c"]
 
 
 class TestInstallAuthFile:

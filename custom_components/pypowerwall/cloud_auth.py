@@ -173,6 +173,18 @@ def save_tokens(authpath: str, email: str, tokens: dict) -> None:
     _write_private(authpath, json.dumps({email: {"url": f"{AUTH_HOST}/", "sso": sso}}, indent=2))
 
 
+def save_tokens_if_absent(authpath: str, email: str, tokens: dict) -> bool:
+    """Save tokens unless an auth file is already there (a Cloud entry may own it). Blocking.
+
+    The v1r setup keeps its sign-in this way so the export window actions,
+    which write the tariff through Tesla's cloud, have a token to use.
+    """
+    if os.path.isfile(os.path.join(os.path.expanduser(authpath), AUTH_FILENAME)):
+        return False
+    save_tokens(authpath, email, tokens)
+    return True
+
+
 def install_auth_file(staging: str, authpath: str) -> None:
     """Copy a validated auth file from staging into place, then drop staging. Blocking."""
     with open(os.path.join(staging, AUTH_FILENAME)) as f:

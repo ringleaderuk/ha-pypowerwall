@@ -26,10 +26,12 @@ from .cloud_auth import (
     parse_callback,
     remove_staging,
     save_tokens,
+    save_tokens_if_absent,
 )
 from .const import (
     AUTH_CACHE_FILENAMES,
     CLOUD_CONN_TYPES,
+    CLOUD_LOGIN_AUTH_DIR,
     CONF_AUTHPATH,
     CONF_CONN_TYPE,
     CONF_DESIGN_CAPACITY,
@@ -74,9 +76,6 @@ STEP_V1R_CHECKED = "v1r_checked"
 STEP_V1R_GATEWAY = "v1r_gateway"
 CONF_CALLBACK_URL = "callback_url"
 CONF_ENERGY_SITE = "energy_site"
-# Where a new Cloud entry's sign-in writes .pypowerwall.auth, and where the v1r
-# setup writes its RSA key, under HA's config dir.
-CLOUD_LOGIN_AUTH_DIR = "pypowerwall"
 # How long to watch for VERIFIED after the switch toggle; pypowerwall's
 # documented transition took about a minute.
 V1R_VERIFY_TIMEOUT = 120
@@ -527,6 +526,13 @@ class PypowerwallConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._v1r_sites = await self.hass.async_add_executor_job(
                     list_energy_sites, self._v1r_token
                 )
+                if email := email_from_tokens(tokens):
+                    await self.hass.async_add_executor_job(
+                        save_tokens_if_absent,
+                        self.hass.config.path(CLOUD_LOGIN_AUTH_DIR),
+                        email,
+                        tokens,
+                    )
             except (CloudAuthError, V1rSetupError) as err:
                 _LOGGER.warning("v1r setup failed: %s", err)
                 errors["base"] = err.error_key
