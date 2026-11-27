@@ -87,3 +87,16 @@ CLOUD_RECONNECT_INTERVAL = 300
 SERVICE_SCHEDULE_MAX_BACKUP = "schedule_max_backup"
 SERVICE_CANCEL_MAX_BACKUP = "cancel_max_backup"
 ATTR_DURATION_SECONDS = "duration_seconds"
+
+# Where the config flow's Tesla sign-in writes .pypowerwall.auth (under the HA config dir).
+CLOUD_LOGIN_AUTH_DIR = "pypowerwall"
+
+# Export window actions (tariff_control.py). Tariff writes go through Tesla's cloud, so
+# v1r entries use the Cloud sign-in file in CLOUD_LOGIN_AUTH_DIR for them.
+SERVICE_SET_EXPORT_WINDOW = "set_export_window"
+SERVICE_RESTORE_TARIFF = "restore_tariff"
+ATTR_START = "start"
+ATTR_END = "end"
+ATTR_PRICE = "price"
+DEFAULT_EXPORT_WINDOW_PRICE = 2.0
+TARIFF_CONTROL_CONN_TYPES = (CONN_TYPE_CLOUD, CONN_TYPE_FLEETAPI, CONN_TYPE_TEDAPI_V1R)

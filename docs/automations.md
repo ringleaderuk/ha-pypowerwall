@@ -9,6 +9,7 @@ The entity IDs below assume the site is called "Home", so its entities look like
 | [Charge from the grid in a cheap window](#charge-from-the-grid-in-a-cheap-window) | Grid charging switch, Battery reserve number | Cloud, FleetAPI, TEDAPI v1r LAN |
 | [Stop exporting while the price is negative](#stop-exporting-while-the-price-is-negative) | Grid export select | Cloud, FleetAPI, TEDAPI v1r LAN |
 | [Fill the battery before a storm](#fill-the-battery-before-a-storm) | `pypowerwall.schedule_max_backup` / `cancel_max_backup` | TEDAPI v1r LAN |
+| [Export during a power-down event](#export-during-a-power-down-event) | Battery mode and Grid export selects, `pypowerwall.set_export_window` | Cloud, FleetAPI, TEDAPI v1r LAN |
 | [Get notified of a grid outage](#get-notified-of-a-grid-outage) | Grid connected binary sensor | All |
 
 See the [Entities](../README.md#entities) table for what each mode exposes.
@@ -108,6 +109,38 @@ actions:
 ```
 
 The two actions exist only for TEDAPI v1r LAN entries. With more than one v1r entry they act on the most recently set up one.
+
+## Export during a power-down event
+
+Export from the battery during a paid event the Tesla tariff doesn't know about, such as an Octopus Power Down event outside peak hours. `pypowerwall.set_export_window` gives the event's time its own high price in the Tesla tariff and puts the original tariff back when the event ends; see [Export window](../README.md#export-window-forced-export) for how it works. `calendar.power_down_events` stands for a calendar holding the events, such as one from your energy supplier's integration. The automation runs 15 minutes early because Tesla takes a few minutes to re-plan after a tariff change.
+
+```yaml
+alias: Powerwall - export during a power-down event
+mode: queued
+triggers:
+  - trigger: calendar
+    entity_id: calendar.power_down_events
+    event: start
+    offset: "-0:15:00"
+actions:
+  - action: select.select_option
+    target:
+      entity_id: select.home_battery_mode
+    data:
+      option: autonomous
+  - action: select.select_option
+    target:
+      entity_id: select.home_grid_export
+    data:
+      option: battery_ok
+  - action: pypowerwall.set_export_window
+    data:
+      start: "{{ trigger.calendar_event.start }}"
+      end: "{{ trigger.calendar_event.end }}"
+      price: 2.0
+```
+
+`battery_ok` is the Tesla app's "Everything" export setting. The battery exports down to the backup reserve at most, so lower the reserve first if you want to export more. The action needs Cloud mode, FleetAPI, or a TEDAPI v1r entry with a Tesla sign-in.
 
 ## Get notified of a grid outage
 

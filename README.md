@@ -148,6 +148,31 @@ Two more write actions are exposed as [Home Assistant actions/services](https://
 | `pypowerwall.schedule_max_backup` | `duration_seconds` (optional, default `7200`) | Starts a manual backup event (storm watch / max backup mode) for the given duration. |
 | `pypowerwall.cancel_max_backup` | none | Cancels the current manual backup event. |
 
+### Export window (forced export)
+
+Powerwalls have no "export now" command. In Time-Based Control the Powerwall exports when the tariff Tesla holds for the site makes the current time the most valuable time to sell, so these two actions change that tariff for a while. They are for events the Tesla tariff doesn't know about, such as an Octopus Power Down event or a Saving Session outside peak hours.
+
+| Service | Fields | Notes |
+| --- | --- | --- |
+| `pypowerwall.set_export_window` | `end` (required), `start` (optional, default now), `price` (optional, default `2.0`) | Saves the site's tariff, then sends Tesla a copy in which `start`–`end` has its own period at `price` per kWh, for both buying and selling. The saved tariff is restored at `end`. |
+| `pypowerwall.restore_tariff` | none | Restores the saved tariff now, ending the window early. Does nothing if no window is in place. |
+
+- **Set-up:** Time-Based Control, export set to Everything, and a time-of-use tariff with export rates already in the Tesla app. The window is cut out of the existing periods, so the rest of the day keeps its real prices.
+- **Price:** set it well above your normal rates. Buy and sell get the same price because Tesla rejects a sell price above the buy price. The high buy price also stops the Powerwall importing during the window.
+- **Timing:** Tesla takes a few minutes to re-plan after a tariff change, so call it at least 10 minutes before the window starts. How much the Powerwall exports is still the optimiser's decision; it exports down to the backup reserve at most.
+- **Restore:** the original tariff is kept in Home Assistant storage until it has been restored. If Home Assistant restarts during a window, the tariff is restored when the integration loads again, or at `end` if that's still to come. A failed restore is retried every 5 minutes.
+- **The Tesla app** shows the temporary `EXPORT_WINDOW` rates while the window is in place.
+- **Connection modes:** tariff changes go through Tesla's cloud. Cloud and FleetAPI entries use their own connection. A TEDAPI v1r entry uses the Tesla sign-in file `.pypowerwall.auth` in `/config/pypowerwall`. The "TEDAPI v1r LAN (set up with Tesla account)" setup saves it there if no file exists yet, and so does the "Cloud mode (sign in with Tesla account)" setup. Other modes don't get these actions.
+
+```yaml
+# Octopus Power Down event, 13:00-14:00 tomorrow
+action: pypowerwall.set_export_window
+data:
+  start: "2026-11-28 13:00:00"
+  end: "2026-11-28 14:00:00"
+  price: 2.0
+```
+
 ### Automation examples
 
 [`docs/automations.md`](./docs/automations.md) has ready-to-paste automations for common cases: charging from the grid in a cheap time window, stopping export at negative prices, max backup during a weather warning, and a grid outage notification.
@@ -185,7 +210,9 @@ custom_components/pypowerwall/
 ├── select.py                # battery mode control, grid export control (Cloud/FleetAPI/v1r only)
 ├── switch.py                # grid charging control (Cloud/FleetAPI/v1r only)
 ├── button.py                # go off-grid / reconnect to grid (disconnect button disabled by default)
-├── services.yaml            # schema for schedule_max_backup / cancel_max_backup (v1r LAN mode only)
+├── services.yaml            # schemas for max backup (v1r only) and export window actions
+├── tariff.py                # export window: tariff rewrite and Tesla read/write
+├── tariff_control.py        # export window: saved tariff, timed restore, retry
 ├── brand/                 # icon.png / icon@2x.png (HA 2026.3+ reads this directly, no brands-repo PR needed)
 ├── translations/         # en.json + one file per HA-supported language; no strings.json (Core-only build artifact, unused by custom integrations)
 hacs.json

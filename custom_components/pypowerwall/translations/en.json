@@ -309,6 +309,28 @@
     "cancel_max_backup": {
       "name": "Cancel max backup",
       "description": "Cancels the current manual backup event (storm watch / max backup mode) started by schedule_max_backup. Requires TEDAPI v1r LAN mode."
+    },
+    "set_export_window": {
+      "name": "Set export window",
+      "description": "Temporarily changes the Tesla tariff so the Powerwall treats a time window as the most valuable time to export, for example an Octopus Power Down event. The original tariff is saved and put back when the window ends. Needs Time-Based Control with export set to Everything, and a Tesla sign-in (Cloud mode, or the sign-in saved by the v1r setup).",
+      "fields": {
+        "start": {
+          "name": "Start",
+          "description": "When the window starts. Defaults to now. The tariff changes straight away; the Powerwall reacts to the window when it arrives."
+        },
+        "end": {
+          "name": "End",
+          "description": "When the window ends. The original tariff is restored at this time. Must be less than 24 hours after the start."
+        },
+        "price": {
+          "name": "Price",
+          "description": "Buy and sell price per kWh during the window, in the tariff's currency. Set it well above your normal rates. Defaults to 2.0."
+        }
+      }
+    },
+    "restore_tariff": {
+      "name": "Restore tariff",
+      "description": "Puts back the Tesla tariff saved by Set export window straight away, ending the export window early. Does nothing if no window is in place."
     }
   }
 }
