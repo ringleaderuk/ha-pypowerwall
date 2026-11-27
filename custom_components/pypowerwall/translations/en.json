@@ -176,6 +176,8 @@
       "battery_level_app": { "name": "Battery level (Tesla app)" },
       "battery_full_pack_energy": { "name": "Battery full pack energy" },
       "battery_health": { "name": "Battery health" },
+      "battery_time_to_full": { "name": "Battery time to full" },
+      "battery_time_to_discharged": { "name": "Battery time to discharged" },
       "backup_time_remaining": { "name": "Backup time remaining" },
       "grid_power": { "name": "Grid power" },
       "grid_import_power": { "name": "Grid import power" },

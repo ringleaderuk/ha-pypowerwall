@@ -1,5 +1,6 @@
 from custom_components.pypowerwall.coordinator import PowerwallData
 from custom_components.pypowerwall.sensor import (
+    _battery_eta,
     _battery_export_power,
     _battery_import_power,
     _grid_export_power,
@@ -138,6 +139,86 @@ class TestBatteryHealth:
 
     def test_missing_capacity_is_none(self):
         assert self._sensor(None, 1).native_value is None
+
+
+def _eta_data(**overrides):
+    values = {
+        "battery_level_app": 50.0,
+        "battery_reserve": 20.0,
+        "battery_power": 0,
+        "battery_full_pack_energy": 12.0,
+        "battery_count": 1,
+        "grid_connected": True,
+    }
+    values.update(overrides)
+    return PowerwallData(**values)
+
+
+class TestBatteryEta:
+    def test_charging_to_full(self):
+        eta = _battery_eta(_eta_data(battery_power=-2850), 13.5, charging=True)
+        assert eta.target_level == 100.0
+        assert eta.energy_kwh == 5.7
+        assert eta.minutes == 120
+
+    def test_discharging_stops_at_reserve_on_grid(self):
+        eta = _battery_eta(_eta_data(battery_power=1140), 13.5, charging=False)
+        assert eta.target_level == 20.0
+        assert eta.energy_kwh == 3.42
+        assert eta.minutes == 180
+
+    def test_discharging_to_app_zero_off_grid(self):
+        eta = _battery_eta(
+            _eta_data(battery_power=1140, grid_connected=False), 13.5, charging=False
+        )
+        assert eta.target_level == 0.0
+        assert eta.minutes == 300
+
+    def test_wrong_direction_or_idle_is_none(self):
+        assert _battery_eta(_eta_data(battery_power=1000), 13.5, charging=True) is None
+        assert _battery_eta(_eta_data(battery_power=-1000), 13.5, charging=False) is None
+        assert _battery_eta(_eta_data(battery_power=20), 13.5, charging=False) is None
+
+    def test_below_reserve_is_zero(self):
+        eta = _battery_eta(
+            _eta_data(battery_power=500, battery_level_app=15.0), 13.5, charging=False
+        )
+        assert eta.minutes == 0
+
+    def test_falls_back_to_design_capacity(self):
+        eta = _battery_eta(
+            _eta_data(battery_power=-2565, battery_full_pack_energy=None), 13.5, charging=True
+        )
+        assert eta.energy_kwh == 6.41
+        assert eta.minutes == 150
+
+    def test_missing_level_is_none(self):
+        data = _eta_data(battery_power=-1000, battery_level_app=None)
+        assert _battery_eta(data, 13.5, charging=True) is None
+
+    def test_sensor_value_and_attributes(self):
+        from unittest.mock import MagicMock
+
+        from custom_components.pypowerwall.sensor import PowerwallBatteryEtaSensor
+
+        coordinator = MagicMock()
+        coordinator.data = _eta_data(din="DIN1", battery_power=1140)
+        sensor = PowerwallBatteryEtaSensor(coordinator, 13.5, charging=False)
+        assert sensor.native_value == 180
+        assert sensor.native_unit_of_measurement == "min"
+        attrs = sensor.extra_state_attributes
+        assert attrs["target_level"] == 20.0
+        assert attrs["finish_time"] is not None
+
+        coordinator.data = _eta_data(din="DIN1", battery_power=-1000)
+        assert sensor.native_value == -1
+        assert sensor.extra_state_attributes["finish_time"] is None
+
+        coordinator.data = _eta_data(din="DIN1", battery_power=10)
+        assert sensor.native_value == -1
+
+        coordinator.data = _eta_data(din="DIN1", battery_power=None)
+        assert sensor.native_value is None
 
 
 class TestAlertAttributes:
