@@ -208,10 +208,14 @@
       "init": {
         "data": {
           "scan_interval": "Scan interval (seconds)",
-          "design_capacity_kwh": "Battery design capacity per Powerwall (kWh)"
+          "design_capacity_kwh": "Battery design capacity per Powerwall (kWh)",
+          "tariff_import_rates_entity": "Import rates for the Tesla tariff",
+          "tariff_export_rates_entity": "Export rates for the Tesla tariff"
         },
         "data_description": {
-          "design_capacity_kwh": "Original rated capacity of one battery, used as the 100% reference for the Battery health sensor. Powerwall 2 and 3 are 13.5 kWh."
+          "design_capacity_kwh": "Original rated capacity of one battery, used as the 100% reference for the Battery health sensor. Powerwall 2 and 3 are 13.5 kWh.",
+          "tariff_import_rates_entity": "The Octopus Energy integration's current day rates entity for your import meter. Setting both rate entities makes Home Assistant manage the tariff Tesla holds for this site, replacing any utility plan selected in the Tesla app, and enables the export window actions. Clear either one to stop.",
+          "tariff_export_rates_entity": "The Octopus Energy integration's export current day rates entity."
         }
       }
     }
@@ -309,6 +313,38 @@
     "cancel_max_backup": {
       "name": "Cancel max backup",
       "description": "Cancels the current manual backup event (storm watch / max backup mode) started by schedule_max_backup. Requires TEDAPI v1r LAN mode."
+    },
+    "set_export_window": {
+      "name": "Set export window",
+      "description": "Adds a window to the Tesla tariff Home Assistant manages, priced so the Powerwall treats it as the best time to export (for example an Octopus Power Down event). The window applies to its own date only and drops out once it has passed. Needs the tariff manager turned on in the integration options, Time-Based Control, and export set to Everything.",
+      "fields": {
+        "start": {
+          "name": "Start",
+          "description": "When the window starts. Defaults to now."
+        },
+        "end": {
+          "name": "End",
+          "description": "When the window ends. At most 24 hours after the start and within the next 7 days."
+        },
+        "price": {
+          "name": "Price",
+          "description": "Buy and sell price per kWh during the window, in pounds. Set it well above your normal rates. Defaults to 2.0."
+        }
+      }
+    },
+    "clear_export_windows": {
+      "name": "Clear export windows",
+      "description": "Removes every export window that hasn't ended yet and writes the plain tariff to Tesla."
+    },
+    "update_tariff": {
+      "name": "Update Tesla tariff",
+      "description": "Rebuilds the managed tariff from the current Octopus rates and writes it to Tesla now. This also happens on its own when the rates change and once a day."
+    }
+  },
+  "issues": {
+    "tariff_sign_in_failed": {
+      "title": "Home Assistant can't update the Tesla tariff",
+      "description": "{title} couldn't connect to Tesla's cloud with the sign-in in {path}, so the tariff and export windows can't be written. If you use Fleet API, run `python -m pypowerwall setup -fleetapi` again and replace `.pypowerwall.fleetapi` there. This notice clears once a write succeeds; the integration retries every 15 minutes."
     }
   }
 }

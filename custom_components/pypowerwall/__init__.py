@@ -6,19 +6,28 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.helpers import config_validation as cv
 
 from .const import (
     ATTR_DURATION_SECONDS,
+    ATTR_END,
+    ATTR_PRICE,
+    ATTR_START,
     CLOUD_CONN_TYPES,
     CONF_CONN_TYPE,
     CONN_TYPE_TEDAPI_V1R,
+    DEFAULT_EXPORT_WINDOW_PRICE,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL_CLOUD,
     DOMAIN,
     SERVICE_CANCEL_MAX_BACKUP,
+    SERVICE_CLEAR_EXPORT_WINDOWS,
     SERVICE_SCHEDULE_MAX_BACKUP,
+    SERVICE_SET_EXPORT_WINDOW,
+    SERVICE_UPDATE_TARIFF,
 )
 from .coordinator import PowerwallDataUpdateCoordinator, async_connect_powerwall
+from .tariff_manager import TariffManager, tariff_manager_enabled
 
 PLATFORMS: list[Platform] = [
     Platform.SENSOR,
@@ -38,6 +47,17 @@ SCHEDULE_MAX_BACKUP_SCHEMA = vol.Schema(
         ),
     }
 )
+
+SET_EXPORT_WINDOW_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_START): cv.datetime,
+        vol.Required(ATTR_END): cv.datetime,
+        vol.Optional(ATTR_PRICE, default=DEFAULT_EXPORT_WINDOW_PRICE): vol.All(
+            vol.Coerce(float), vol.Range(min=0.01, max=100)
+        ),
+    }
+)
+TARIFF_SERVICES = (SERVICE_SET_EXPORT_WINDOW, SERVICE_CLEAR_EXPORT_WINDOWS, SERVICE_UPDATE_TARIFF)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: PypowerwallConfigEntry) -> bool:
@@ -60,6 +80,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: PypowerwallConfigEntry) 
 
     if entry.data[CONF_CONN_TYPE] == CONN_TYPE_TEDAPI_V1R:
         _async_register_v1r_services(hass, entry)
+    if tariff_manager_enabled(entry):
+        await _async_setup_tariff_manager(hass, entry)
 
     return True
 
@@ -132,3 +154,48 @@ def _async_register_v1r_services(hass: HomeAssistant, entry: PypowerwallConfigEn
             hass.services.async_remove(DOMAIN, SERVICE_CANCEL_MAX_BACKUP)
 
     entry.async_on_unload(_remove_services)
+
+
+async def _async_setup_tariff_manager(hass: HomeAssistant, entry: PypowerwallConfigEntry) -> None:
+    """Start the tariff manager and register its actions.
+
+    Like the v1r services, the actions are domain-scoped and act on the most
+    recently set-up entry with a tariff manager; they go once the last unloads.
+    """
+    managers: dict[str, TariffManager] = hass.data.setdefault(DOMAIN, {}).setdefault(
+        "tariff_managers", {}
+    )
+    manager = TariffManager(hass, entry)
+    managers[entry.entry_id] = manager
+    await manager.async_start()
+
+    if not hass.services.has_service(DOMAIN, SERVICE_SET_EXPORT_WINDOW):
+
+        def _current() -> TariffManager:
+            return next(reversed(managers.values()))
+
+        async def _set_export_window(call: ServiceCall) -> None:
+            await _current().async_add_window(
+                call.data.get(ATTR_START), call.data[ATTR_END], call.data[ATTR_PRICE]
+            )
+
+        async def _clear_export_windows(call: ServiceCall) -> None:
+            await _current().async_clear_windows()
+
+        async def _update_tariff(call: ServiceCall) -> None:
+            await _current().async_sync(force=True)
+
+        hass.services.async_register(
+            DOMAIN, SERVICE_SET_EXPORT_WINDOW, _set_export_window, schema=SET_EXPORT_WINDOW_SCHEMA
+        )
+        hass.services.async_register(DOMAIN, SERVICE_CLEAR_EXPORT_WINDOWS, _clear_export_windows)
+        hass.services.async_register(DOMAIN, SERVICE_UPDATE_TARIFF, _update_tariff)
+
+    def _remove() -> None:
+        manager.async_stop()
+        managers.pop(entry.entry_id, None)
+        if not managers:
+            for service in TARIFF_SERVICES:
+                hass.services.async_remove(DOMAIN, service)
+
+    entry.async_on_unload(_remove)

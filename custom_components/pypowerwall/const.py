@@ -87,3 +87,20 @@ CLOUD_RECONNECT_INTERVAL = 300
 SERVICE_SCHEDULE_MAX_BACKUP = "schedule_max_backup"
 SERVICE_CANCEL_MAX_BACKUP = "cancel_max_backup"
 ATTR_DURATION_SECONDS = "duration_seconds"
+
+# Where the config flow's Tesla sign-in and v1r key go, under HA's config dir. The
+# tariff manager also looks here for the sign-in a v1r entry uses for tariff writes.
+CLOUD_LOGIN_AUTH_DIR = "pypowerwall"
+
+# Tariff manager (tariff_manager.py): Home Assistant writes the site's Tesla tariff
+# from the Octopus Energy integration's day-rate event entities, set in the options.
+CONF_TARIFF_IMPORT_RATES = "tariff_import_rates_entity"
+CONF_TARIFF_EXPORT_RATES = "tariff_export_rates_entity"
+TARIFF_CONTROL_CONN_TYPES = (CONN_TYPE_CLOUD, CONN_TYPE_FLEETAPI, CONN_TYPE_TEDAPI_V1R)
+SERVICE_SET_EXPORT_WINDOW = "set_export_window"
+SERVICE_CLEAR_EXPORT_WINDOWS = "clear_export_windows"
+SERVICE_UPDATE_TARIFF = "update_tariff"
+ATTR_START = "start"
+ATTR_END = "end"
+ATTR_PRICE = "price"
+DEFAULT_EXPORT_WINDOW_PRICE = 2.0
