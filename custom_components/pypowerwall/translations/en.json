@@ -144,9 +144,7 @@
         "description": "Update the connection settings for this Powerwall ({conn_type} mode). Useful if the gateway password changed, the gateway moved to a new IP address, or a Cloud/FleetAPI config cache directory moved.\n\nThis must still reach the same physical gateway -- to switch to a different connection mode or a different Powerwall, remove this entry and add it again.",
         "menu_options": {
           "reconfigure_cloud_login": "Sign in to Tesla again",
-          "reconfigure_settings": "Edit auth directory and site ID",
-          "reconfigure_connection": "Edit connection settings",
-          "reconfigure_tesla_login": "Sign in to Tesla (for export windows)"
+          "reconfigure_settings": "Edit auth directory and site ID"
         },
         "data": {
           "host": "Host",
@@ -178,16 +176,6 @@
         "data_description": {
           "callback_url": "The whole `Failed to launch 'tesla://auth/callback?code=...'` line, or just the tesla:// address in it"
         }
-      },
-      "reconfigure_tesla_login": {
-        "title": "Sign in to Tesla for export windows",
-        "description": "The export window actions change your Tesla tariff, which goes through Tesla's cloud rather than the gateway. This saves a Tesla sign-in for them, replacing any earlier one. The LAN connection to the gateway is unchanged.\n\nUse Chrome or Edge on a computer.\n\n1. Open [Tesla's sign-in page]({login_url}).\n2. On that tab, press **F12** and choose the **Console** tab in the panel that opens.\n3. Sign in to your Tesla account. When you finish, the page won't change. That's expected.\n4. The Console shows a red line starting `Failed to launch 'tesla://auth/callback?code=`. Copy that whole line and paste it below.\n\nPaste it within a few minutes. The link works once, so if anything goes wrong a fresh one is shown. Home Assistant then checks the sign-in every 6 hours, which keeps it working, and raises a repair if Tesla stops accepting it.",
-        "data": {
-          "callback_url": "Console line or callback address"
-        },
-        "data_description": {
-          "callback_url": "The whole `Failed to launch 'tesla://auth/callback?code=...'` line, or just the tesla:// address in it"
-        }
       }
     },
     "error": {
@@ -212,7 +200,6 @@
       "already_configured": "This Powerwall gateway is already configured",
       "v1r_already_configured": "This Powerwall is already set up in Home Assistant (for example as a Cloud entry). Delete that entry first, then run this setup again. The new entry keeps the same entity IDs.",
       "reconfigure_successful": "Connection settings updated",
-      "tesla_sign_in_saved": "Tesla sign-in saved. The export window actions will use it.",
       "wrong_gateway": "Those settings connect to a different Powerwall gateway than this entry was set up for. Reconfigure only updates how to reach the same gateway -- to add a different one, add a new entry instead."
     }
   },
@@ -322,34 +309,6 @@
     "cancel_max_backup": {
       "name": "Cancel max backup",
       "description": "Cancels the current manual backup event (storm watch / max backup mode) started by schedule_max_backup. Requires TEDAPI v1r LAN mode."
-    },
-    "set_export_window": {
-      "name": "Set export window",
-      "description": "Temporarily changes the Tesla tariff so the Powerwall treats a time window as the most valuable time to export, for example an Octopus Power Down event. The original tariff is saved and put back when the window ends. Needs Time-Based Control with export set to Everything, and a Tesla sign-in (Cloud mode, or the sign-in saved by the v1r setup).",
-      "fields": {
-        "start": {
-          "name": "Start",
-          "description": "When the window starts. Defaults to now. The tariff changes straight away; the Powerwall reacts to the window when it arrives."
-        },
-        "end": {
-          "name": "End",
-          "description": "When the window ends. The original tariff is restored at this time. Must be less than 24 hours after the start."
-        },
-        "price": {
-          "name": "Price",
-          "description": "Buy and sell price per kWh during the window, in the tariff's currency. Set it well above your normal rates. Defaults to 2.0."
-        }
-      }
-    },
-    "restore_tariff": {
-      "name": "Restore tariff",
-      "description": "Puts back the Tesla tariff saved by Set export window straight away, ending the export window early. Does nothing if no window is in place."
-    }
-  },
-  "issues": {
-    "tesla_sign_in_failed": {
-      "title": "Tesla sign-in for export windows has stopped working",
-      "description": "Tesla no longer accepts the sign-in that {title} uses to change your tariff, so the export window actions can't start a window or restore your tariff afterwards.\n\nGo to Settings → Devices & services → Tesla Powerwall, open {title}'s ⋮ menu, choose **Reconfigure**, then **Sign in to Tesla (for export windows)**. This notice clears at the next successful check, within 6 hours, or when an export window action next connects.\n\nIf an export window was in place, check your tariff in the Tesla app and re-select your energy plan there if needed."
     }
   }
 }
