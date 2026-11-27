@@ -180,6 +180,8 @@ class TestBuildTariff:
             0.31755
         )
         assert tariff["currency"] == "GBP"
+        assert tariff["name"] == "Managed by Home Assistant"
+        assert tariff["sell_tariff"]["name"] == "Managed by Home Assistant (export)"
         assert tariff["version"] == 1
 
     def test_window_gets_its_own_dated_season(self):
