@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import secrets
 from typing import Any
 
 import voluptuous as vol
@@ -19,8 +21,10 @@ from .cloud_auth import (
     LoginRequest,
     email_from_tokens,
     exchange_code,
+    install_auth_file,
     new_login_request,
     parse_callback,
+    remove_staging,
     save_tokens,
 )
 from .const import (
@@ -46,17 +50,48 @@ from .const import (
     MIN_SCAN_INTERVAL,
 )
 from .coordinator import build_powerwall_kwargs
+from .v1r_setup import (
+    KEY_TIMED_OUT,
+    KEY_VERIFIED,
+    EnergySite,
+    V1rSetupError,
+    key_state,
+    list_energy_sites,
+    load_or_create_key,
+    register_key,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 STEP_CLOUD_LOGIN = "cloud_login"
 STEP_RECONFIGURE_CLOUD_LOGIN = "reconfigure_cloud_login"
 STEP_RECONFIGURE_SETTINGS = "reconfigure_settings"
+STEP_V1R_LOGIN = "v1r_login"
+STEP_V1R_SITE = "v1r_site"
+STEP_V1R_VERIFY = "v1r_verify"
+STEP_V1R_WAIT = "v1r_wait"
+STEP_V1R_CHECKED = "v1r_checked"
+STEP_V1R_GATEWAY = "v1r_gateway"
 CONF_CALLBACK_URL = "callback_url"
-# Where a new Cloud entry's sign-in writes .pypowerwall.auth, under HA's config dir.
+CONF_ENERGY_SITE = "energy_site"
+# Where a new Cloud entry's sign-in writes .pypowerwall.auth, and where the v1r
+# setup writes its RSA key, under HA's config dir.
 CLOUD_LOGIN_AUTH_DIR = "pypowerwall"
+# How long to watch for VERIFIED after the switch toggle; pypowerwall's
+# documented transition took about a minute.
+V1R_VERIFY_TIMEOUT = 120
+V1R_VERIFY_POLL_INTERVAL = 10
 
 STEP_CLOUD_LOGIN_SCHEMA = vol.Schema({vol.Required(CONF_CALLBACK_URL): str})
+
+STEP_V1R_GATEWAY_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_HOST): str,
+        vol.Optional(CONF_GW_PWD): str,
+        vol.Optional(CONF_PASSWORD): str,
+        vol.Optional(CONF_WIFI_HOST): str,
+    }
+)
 
 STEP_LOCAL_SCHEMA = vol.Schema(
     {
@@ -114,6 +149,7 @@ MENU_OPTIONS = [
     STEP_CLOUD_LOGIN,
     CONN_TYPE_CLOUD,
     CONN_TYPE_FLEETAPI,
+    STEP_V1R_LOGIN,
     CONN_TYPE_TEDAPI_V1R,
 ]
 
@@ -216,19 +252,33 @@ class PypowerwallConfigFlow(ConfigFlow, domain=DOMAIN):
 
     def __init__(self) -> None:
         self._login: LoginRequest | None = None
+        self._v1r_token: str | None = None
+        self._v1r_key_path: str | None = None
+        self._v1r_public_der: bytes | None = None
+        self._v1r_sites: list[EnergySite] = []
+        self._v1r_site: EnergySite | None = None
+        self._v1r_state: int | None = None
+        self._v1r_registered = False
+        self._v1r_wait_task: asyncio.Task[int | None] | None = None
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Let the user pick which pypowerwall connection mode to set up."""
         return self.async_show_menu(step_id="user", menu_options=MENU_OPTIONS)
 
     async def _async_step_connection(
-        self, conn_type: str, schema: vol.Schema, user_input: dict[str, Any] | None
+        self,
+        conn_type: str,
+        schema: vol.Schema,
+        user_input: dict[str, Any] | None,
+        step_id: str | None = None,
+        extra_data: dict[str, Any] | None = None,
+        description_placeholders: dict[str, str] | None = None,
     ) -> ConfigFlowResult:
         """Shared validate/create logic for every connection-type step."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            data = {CONF_CONN_TYPE: conn_type, **user_input}
+            data = {CONF_CONN_TYPE: conn_type, **(extra_data or {}), **user_input}
             try:
                 din, site_name = await _validate_input(self.hass, conn_type, data)
             except MissingPasswordError:
@@ -248,7 +298,12 @@ class PypowerwallConfigFlow(ConfigFlow, domain=DOMAIN):
                 title = data.get(CONF_HOST) or site_name or f"Powerwall ({conn_type})"
                 return self.async_create_entry(title=title, data=data)
 
-        return self.async_show_form(step_id=conn_type, data_schema=schema, errors=errors)
+        return self.async_show_form(
+            step_id=step_id or conn_type,
+            data_schema=self.add_suggested_values_to_schema(schema, user_input or {}),
+            errors=errors,
+            description_placeholders=description_placeholders,
+        )
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
@@ -365,8 +420,10 @@ class PypowerwallConfigFlow(ConfigFlow, domain=DOMAIN):
 
         With an entry (reconfigure) the tokens replace that entry's auth file and
         the DIN must still match; otherwise they go to CLOUD_LOGIN_AUTH_DIR and a
-        new entry is created. An authorization code works once, so any failure
-        issues a fresh login link.
+        new entry is created. The tokens are validated from a staging directory
+        and only copied into place once the gateway checks pass, so signing in
+        to the wrong account can't overwrite a working entry's auth file. An
+        authorization code works once, so any failure issues a fresh login link.
         """
         errors: dict[str, str] = {}
         if self._login is None:
@@ -374,6 +431,14 @@ class PypowerwallConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             login = self._login
+            authpath = (
+                entry.data[CONF_AUTHPATH]
+                if entry is not None
+                else self.hass.config.path(CLOUD_LOGIN_AUTH_DIR)
+            )
+            staging = self.hass.config.path(
+                CLOUD_LOGIN_AUTH_DIR, f".signin-{secrets.token_hex(4)}"
+            )
             try:
                 code = parse_callback(user_input[CONF_CALLBACK_URL], login.state)
                 tokens = await self.hass.async_add_executor_job(
@@ -382,13 +447,8 @@ class PypowerwallConfigFlow(ConfigFlow, domain=DOMAIN):
                 email = email_from_tokens(tokens)
                 if not email:
                     raise CloudAuthError("Tesla's tokens did not include the account email")
-                authpath = (
-                    entry.data[CONF_AUTHPATH]
-                    if entry is not None
-                    else self.hass.config.path(CLOUD_LOGIN_AUTH_DIR)
-                )
-                await self.hass.async_add_executor_job(save_tokens, authpath, email, tokens)
-                data = {CONF_CONN_TYPE: CONN_TYPE_CLOUD, CONF_AUTHPATH: authpath}
+                await self.hass.async_add_executor_job(save_tokens, staging, email, tokens)
+                data = {CONF_CONN_TYPE: CONN_TYPE_CLOUD, CONF_AUTHPATH: staging}
                 if entry is not None and entry.data.get(CONF_SITEID):
                     data[CONF_SITEID] = entry.data[CONF_SITEID]
                 din, site_name = await _validate_input(self.hass, CONN_TYPE_CLOUD, data)
@@ -401,14 +461,22 @@ class PypowerwallConfigFlow(ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected error during Tesla sign-in")
                 errors["base"] = "unknown"
             else:
-                await self.async_set_unique_id(din)
+                try:
+                    await self.async_set_unique_id(din)
+                    if entry is not None:
+                        self._abort_if_unique_id_mismatch(reason="wrong_gateway")
+                    else:
+                        self._abort_if_unique_id_configured()
+                    await self.hass.async_add_executor_job(install_auth_file, staging, authpath)
+                finally:
+                    await self.hass.async_add_executor_job(remove_staging, staging)
+                data[CONF_AUTHPATH] = authpath
                 if entry is not None:
-                    self._abort_if_unique_id_mismatch(reason="wrong_gateway")
                     return self.async_update_reload_and_abort(entry, data=data)
-                self._abort_if_unique_id_configured()
                 return self.async_create_entry(
                     title=site_name or f"Powerwall ({CONN_TYPE_CLOUD})", data=data
                 )
+            await self.hass.async_add_executor_job(remove_staging, staging)
             self._login = new_login_request()
 
         return self.async_show_form(
@@ -432,6 +500,163 @@ class PypowerwallConfigFlow(ConfigFlow, domain=DOMAIN):
         """TEDAPI v1r LAN mode: requires an RSA key from `python -m pypowerwall register`."""
         return await self._async_step_connection(
             CONN_TYPE_TEDAPI_V1R, STEP_TEDAPI_V1R_SCHEMA, user_input
+        )
+
+    async def async_step_v1r_login(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """v1r set up from here: sign in to Tesla, then create and register the RSA key."""
+        errors: dict[str, str] = {}
+        if self._login is None:
+            self._login = new_login_request()
+
+        if user_input is not None:
+            login = self._login
+            try:
+                code = parse_callback(user_input[CONF_CALLBACK_URL], login.state)
+                tokens = await self.hass.async_add_executor_job(
+                    exchange_code, code, login.code_verifier
+                )
+                self._v1r_token = tokens["access_token"]
+                (
+                    self._v1r_key_path,
+                    self._v1r_public_der,
+                ) = await self.hass.async_add_executor_job(
+                    load_or_create_key, self.hass.config.path(CLOUD_LOGIN_AUTH_DIR)
+                )
+                self._v1r_sites = await self.hass.async_add_executor_job(
+                    list_energy_sites, self._v1r_token
+                )
+            except (CloudAuthError, V1rSetupError) as err:
+                _LOGGER.warning("v1r setup failed: %s", err)
+                errors["base"] = err.error_key
+            except Exception:  # noqa: BLE001 - surface unexpected errors as a generic failure
+                _LOGGER.exception("Unexpected error during v1r setup")
+                errors["base"] = "unknown"
+            else:
+                if len(self._v1r_sites) == 1:
+                    self._v1r_site = self._v1r_sites[0]
+                    return await self._async_v1r_register()
+                return await self.async_step_v1r_site()
+            self._login = new_login_request()
+
+        return self.async_show_form(
+            step_id=STEP_V1R_LOGIN,
+            data_schema=STEP_CLOUD_LOGIN_SCHEMA,
+            errors=errors,
+            description_placeholders={"login_url": self._login.url},
+        )
+
+    async def async_step_v1r_site(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Pick the energy site when the Tesla account has more than one."""
+        if user_input is not None:
+            self._v1r_site = next(
+                site for site in self._v1r_sites if site.site_id == user_input[CONF_ENERGY_SITE]
+            )
+            return await self._async_v1r_register()
+        choices = {
+            site.site_id: f"{site.name or site.site_id} ({site.din or 'unknown gateway'})"
+            for site in self._v1r_sites
+        }
+        return self.async_show_form(
+            step_id=STEP_V1R_SITE,
+            data_schema=vol.Schema({vol.Required(CONF_ENERGY_SITE): vol.In(choices)}),
+        )
+
+    async def _async_v1r_register(self, error: str | None = None) -> ConfigFlowResult:
+        """Send the key to the gateway, which opens its ~10 minute verification window.
+
+        Checks for an existing entry for this gateway first: finding it only at
+        the gateway form, after the switch toggle, would waste the whole setup.
+        """
+        if self._v1r_site.din:
+            await self.async_set_unique_id(self._v1r_site.din)
+            self._abort_if_unique_id_configured(error="v1r_already_configured")
+        try:
+            self._v1r_state = await self.hass.async_add_executor_job(
+                register_key, self._v1r_token, self._v1r_site.site_id, self._v1r_public_der
+            )
+        except V1rSetupError as err:
+            _LOGGER.warning("v1r key registration failed: %s", err)
+            self._v1r_registered = False
+            return self._async_show_v1r_verify(err.error_key)
+        self._v1r_registered = True
+        if self._v1r_state == KEY_VERIFIED:
+            return await self.async_step_v1r_gateway()
+        return self._async_show_v1r_verify(error)
+
+    @callback
+    def _async_show_v1r_verify(self, error: str | None) -> ConfigFlowResult:
+        return self.async_show_form(
+            step_id=STEP_V1R_VERIFY,
+            data_schema=vol.Schema({}),
+            errors={"base": error} if error else None,
+        )
+
+    async def async_step_v1r_verify(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """The user has toggled the Powerwall's switch; go and watch for VERIFIED."""
+        if user_input is None:
+            return self._async_show_v1r_verify(None)
+        if not self._v1r_registered:
+            return await self._async_v1r_register()
+        return await self.async_step_v1r_wait()
+
+    async def async_step_v1r_wait(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if self._v1r_wait_task is None:
+            self._v1r_wait_task = self.hass.async_create_task(self._async_wait_for_verified())
+        if not self._v1r_wait_task.done():
+            return self.async_show_progress(
+                step_id=STEP_V1R_WAIT,
+                progress_action="wait_for_verified",
+                progress_task=self._v1r_wait_task,
+            )
+        self._v1r_state = self._v1r_wait_task.result()
+        self._v1r_wait_task = None
+        return self.async_show_progress_done(next_step_id=STEP_V1R_CHECKED)
+
+    async def _async_wait_for_verified(self) -> int | None:
+        state = None
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + V1R_VERIFY_TIMEOUT
+        while loop.time() < deadline:
+            await asyncio.sleep(V1R_VERIFY_POLL_INTERVAL)
+            try:
+                state = await self.hass.async_add_executor_job(
+                    key_state, self._v1r_token, self._v1r_site.site_id, self._v1r_public_der
+                )
+            except V1rSetupError as err:
+                _LOGGER.debug("v1r key state poll failed: %s", err)
+                continue
+            if state in (KEY_VERIFIED, KEY_TIMED_OUT):
+                break
+        return state
+
+    async def async_step_v1r_checked(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if self._v1r_state == KEY_VERIFIED:
+            return await self.async_step_v1r_gateway()
+        if self._v1r_state == KEY_TIMED_OUT:
+            return await self._async_v1r_register("v1r_window_closed")
+        return self._async_show_v1r_verify("v1r_not_verified")
+
+    async def async_step_v1r_gateway(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """The key is verified: collect the gateway's LAN address and password."""
+        return await self._async_step_connection(
+            CONN_TYPE_TEDAPI_V1R,
+            STEP_V1R_GATEWAY_SCHEMA,
+            user_input,
+            step_id=STEP_V1R_GATEWAY,
+            extra_data={CONF_RSA_KEY_PATH: self._v1r_key_path},
+            description_placeholders={"key_path": self._v1r_key_path},
         )
 
     @staticmethod
