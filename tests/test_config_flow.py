@@ -559,6 +559,10 @@ async def test_reconfigure_v1r_rejects_a_missing_rsa_key(hass: HomeAssistant, tm
     entry.add_to_hass(hass)
 
     result = await entry.start_reconfigure_flow(hass)
+    assert result["type"] == "menu"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_connection"}
+    )
     result2 = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         {
@@ -586,12 +590,91 @@ async def test_reconfigure_v1r_requires_a_password(hass: HomeAssistant) -> None:
     entry.add_to_hass(hass)
 
     result = await entry.start_reconfigure_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_connection"}
+    )
     result2 = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_HOST: "192.168.91.1", CONF_RSA_KEY_PATH: "/key.pem"}
     )
 
     assert result2["type"] == "form"
     assert result2["errors"] == {"base": "missing_password"}
+
+
+def _v1r_entry(**extra) -> MockConfigEntry:
+    return MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=DIN,
+        data={
+            CONF_CONN_TYPE: CONN_TYPE_TEDAPI_V1R,
+            CONF_HOST: "192.168.91.1",
+            CONF_GW_PWD: "pw",
+            CONF_RSA_KEY_PATH: "/key.pem",
+            **extra,
+        },
+    )
+
+
+async def test_reconfigure_v1r_tesla_sign_in_saves_auth_file(
+    hass: HomeAssistant, tmp_path
+) -> None:
+    import json
+
+    hass.config.config_dir = str(tmp_path)
+    entry = _v1r_entry()
+    entry.add_to_hass(hass)
+
+    result = await entry.start_reconfigure_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_tesla_login"}
+    )
+    assert result["step_id"] == "reconfigure_tesla_login"
+    with (
+        patch(EXCHANGE_TARGET, return_value=_fake_tokens()),
+        patch(CONNECT_TARGET, return_value=make_fake_pw()) as powerwall,
+    ):
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"callback_url": _callback_for(result)}
+        )
+        await hass.async_block_till_done()
+
+    assert result2["type"] == "abort"
+    assert result2["reason"] == "tesla_sign_in_saved"
+    authpath = tmp_path / "pypowerwall"
+    assert entry.data == {
+        CONF_CONN_TYPE: CONN_TYPE_TEDAPI_V1R,
+        CONF_HOST: "192.168.91.1",
+        CONF_GW_PWD: "pw",
+        CONF_RSA_KEY_PATH: "/key.pem",
+        CONF_AUTHPATH: str(authpath),
+    }
+    assert list(json.loads((authpath / ".pypowerwall.auth").read_text())) == [
+        "owner@example.com"
+    ]
+    assert [p.name for p in authpath.iterdir()] == [".pypowerwall.auth"]
+    assert powerwall.call_args_list[0].kwargs["cloudmode"] is True
+
+
+async def test_reconfigure_v1r_tesla_sign_in_wrong_gateway(hass: HomeAssistant, tmp_path) -> None:
+    hass.config.config_dir = str(tmp_path)
+    entry = _v1r_entry()
+    entry.add_to_hass(hass)
+
+    result = await entry.start_reconfigure_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_tesla_login"}
+    )
+    with (
+        patch(EXCHANGE_TARGET, return_value=_fake_tokens()),
+        patch(CONNECT_TARGET, return_value=make_fake_pw(din="OTHER-DIN")),
+    ):
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"callback_url": _callback_for(result)}
+        )
+
+    assert result2["reason"] == "wrong_gateway"
+    assert CONF_AUTHPATH not in entry.data
+    assert list((tmp_path / "pypowerwall").iterdir()) == []
 
 
 def _scan_interval_default(result) -> int:

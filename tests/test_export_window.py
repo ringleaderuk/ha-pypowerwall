@@ -7,6 +7,7 @@ import pytest
 from conftest import DIN, make_fake_pw
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
 from custom_components.pypowerwall.const import (
@@ -20,7 +21,11 @@ from custom_components.pypowerwall.const import (
     DOMAIN,
 )
 from custom_components.pypowerwall.tariff import EXPORT_WINDOW_PERIOD, to_v2
-from custom_components.pypowerwall.tariff_control import RESTORE_RETRY_SECONDS
+from custom_components.pypowerwall.tariff_control import (
+    RESTORE_RETRY_SECONDS,
+    SIGN_IN_CHECK_INTERVAL,
+    SIGN_IN_FIRST_CHECK_SECONDS,
+)
 
 CONNECT_TARGET = "custom_components.pypowerwall.coordinator.pypowerwall.Powerwall"
 NOW = datetime.fromisoformat("2026-11-28T12:00:00+00:00")
@@ -304,3 +309,50 @@ async def test_services_only_for_tariff_capable_entries(hass: HomeAssistant, tmp
     assert hass.services.has_service(DOMAIN, "restore_tariff")
     assert await hass.config_entries.async_unload(entry.entry_id)
     assert not hass.services.has_service(DOMAIN, "set_export_window")
+
+
+async def test_sign_in_check_raises_and_clears_repair(
+    hass: HomeAssistant, tmp_path, frozen
+) -> None:
+    entry = await _setup(hass, make_fake_pw(), _v1r_data(_cloud_data(tmp_path)[CONF_AUTHPATH]))
+    issue_id = f"tesla_sign_in_failed_{entry.entry_id}"
+    registry = ir.async_get(hass)
+
+    with patch(CONNECT_TARGET, return_value=make_fake_pw(connected=False)) as connect:
+        frozen.tick(SIGN_IN_FIRST_CHECK_SECONDS + 1)
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+    assert connect.call_args.kwargs["cloudmode"] is True
+    assert registry.async_get_issue(DOMAIN, issue_id) is not None
+
+    with patch(CONNECT_TARGET, return_value=_with_site(make_fake_pw())):
+        frozen.tick(SIGN_IN_CHECK_INTERVAL)
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+    assert registry.async_get_issue(DOMAIN, issue_id) is None
+
+
+async def test_sign_in_check_skipped_without_sign_in(
+    hass: HomeAssistant, tmp_path, frozen
+) -> None:
+    entry = await _setup(hass, make_fake_pw(), _v1r_data(tmp_path))
+
+    with patch(CONNECT_TARGET) as connect:
+        frozen.tick(SIGN_IN_FIRST_CHECK_SECONDS + 1)
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+    connect.assert_not_called()
+    issue_id = f"tesla_sign_in_failed_{entry.entry_id}"
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+
+
+async def test_cloud_entry_has_no_separate_sign_in_check(
+    hass: HomeAssistant, tmp_path, frozen
+) -> None:
+    await _setup(hass, _with_site(make_fake_pw()), _cloud_data(tmp_path))
+
+    with patch(CONNECT_TARGET) as connect:
+        frozen.tick(SIGN_IN_FIRST_CHECK_SECONDS + 1)
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+    connect.assert_not_called()

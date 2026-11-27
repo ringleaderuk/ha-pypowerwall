@@ -4,6 +4,10 @@ The original tariff is saved to Home Assistant storage before anything is
 written, so a restart in the middle of a window still restores it: on setup a
 saved tariff is put back at its window's end, or straight away if that has
 passed. A failed restore is retried every RESTORE_RETRY_SECONDS.
+
+v1r entries reach Tesla's cloud through their own sign-in file, which is
+checked every SIGN_IN_CHECK_INTERVAL to keep it refreshed; a failed check
+raises a repair issue asking for a new sign-in.
 """
 
 from __future__ import annotations
@@ -18,7 +22,12 @@ from zoneinfo import ZoneInfo
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
-from homeassistant.helpers.event import async_call_later, async_track_point_in_time
+from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.event import (
+    async_call_later,
+    async_track_point_in_time,
+    async_track_time_interval,
+)
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
@@ -39,6 +48,9 @@ _LOGGER = logging.getLogger(__name__)
 STORAGE_VERSION = 1
 RESTORE_RETRY_SECONDS = 300
 MAX_WINDOW = timedelta(hours=24)
+SIGN_IN_FIRST_CHECK_SECONDS = 60
+SIGN_IN_CHECK_INTERVAL = timedelta(hours=6)
+ISSUE_TESLA_SIGN_IN = "tesla_sign_in_failed"
 
 
 def _aware(value: datetime) -> datetime:
@@ -71,6 +83,7 @@ class TariffController:
         )
         self._backup: dict[str, Any] | None = None
         self._unsub: CALLBACK_TYPE | None = None
+        self._unsub_checks: list[CALLBACK_TYPE] = []
         self._lock = asyncio.Lock()
 
     @property
@@ -82,10 +95,23 @@ class TariffController:
         self._backup = await self._store.async_load()
         if self._backup:
             self._schedule_restore(dt_util.parse_datetime(self._backup["end"]))
+        if self._uses_own_sign_in:
+            self._unsub_checks = [
+                async_call_later(self.hass, SIGN_IN_FIRST_CHECK_SECONDS, self._async_check_sign_in),
+                async_track_time_interval(
+                    self.hass,
+                    self._async_check_sign_in,
+                    SIGN_IN_CHECK_INTERVAL,
+                    cancel_on_shutdown=True,
+                ),
+            ]
 
     @callback
     def async_stop(self) -> None:
         self._cancel()
+        for unsub in self._unsub_checks:
+            unsub()
+        self._unsub_checks = []
 
     @callback
     def _cancel(self) -> None:
@@ -112,28 +138,66 @@ class TariffController:
                 err,
             )
 
-    async def _async_cloud_client(self) -> Any:
-        if self.entry.data[CONF_CONN_TYPE] != CONN_TYPE_TEDAPI_V1R:
-            return self.entry.runtime_data.pw
-        authpath = self.entry.data.get(CONF_AUTHPATH) or self.hass.config.path(
-            CLOUD_LOGIN_AUTH_DIR
+    @property
+    def _uses_own_sign_in(self) -> bool:
+        """v1r entries reach Tesla's cloud through a separate sign-in file."""
+        return self.entry.data[CONF_CONN_TYPE] == CONN_TYPE_TEDAPI_V1R
+
+    @property
+    def _authpath(self) -> str:
+        return self.entry.data.get(CONF_AUTHPATH) or self.hass.config.path(CLOUD_LOGIN_AUTH_DIR)
+
+    @property
+    def _issue_id(self) -> str:
+        return f"{ISSUE_TESLA_SIGN_IN}_{self.entry.entry_id}"
+
+    async def _async_has_sign_in(self) -> bool:
+        return await self.hass.async_add_executor_job(
+            os.path.isfile, os.path.join(self._authpath, AUTH_CACHE_FILENAMES[CONN_TYPE_CLOUD])
         )
-        filename = AUTH_CACHE_FILENAMES[CONN_TYPE_CLOUD]
-        if not await self.hass.async_add_executor_job(
-            os.path.isfile, os.path.join(authpath, filename)
-        ):
+
+    async def _async_cloud_client(self) -> Any:
+        if not self._uses_own_sign_in:
+            return self.entry.runtime_data.pw
+        if not await self._async_has_sign_in():
             raise HomeAssistantError(
-                f"Tariff changes go through Tesla's cloud and need a Tesla sign-in, but there is "
-                f"no {filename} in {authpath}. Sign in once with the integration's \"Cloud mode "
-                "(sign in with Tesla account)\" or \"TEDAPI v1r LAN (set up with Tesla account)\" "
-                "option."
+                "Tariff changes go through Tesla's cloud and need a Tesla sign-in, but there is "
+                f"no {AUTH_CACHE_FILENAMES[CONN_TYPE_CLOUD]} in {self._authpath}. Use "
+                "Reconfigure → \"Sign in to Tesla\" on this Powerwall's integration entry."
             )
         try:
-            return await async_connect_powerwall(
-                self.hass, CONN_TYPE_CLOUD, {CONF_AUTHPATH: authpath}
+            pw = await async_connect_powerwall(
+                self.hass, CONN_TYPE_CLOUD, {CONF_AUTHPATH: self._authpath}
             )
         except ConfigEntryNotReady as err:
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                self._issue_id,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=ISSUE_TESLA_SIGN_IN,
+                translation_placeholders={"title": self.entry.title},
+            )
             raise HomeAssistantError(f"Could not connect to Tesla's cloud: {err}") from err
+        ir.async_delete_issue(self.hass, DOMAIN, self._issue_id)
+        return pw
+
+    async def _async_check_sign_in(self, _now: datetime | None = None) -> None:
+        """Use the sign-in so Tesla keeps refreshing it, and flag it once it stops working.
+
+        Tesla only refreshes a sign-in whose token has been used (pypowerwall's
+        cloud/AUTH.md, RCA-8), so one left idle past its ~8 hour life can't be
+        revived; regular use, and a repair notice when that fails, avoid finding
+        out in the middle of an export window.
+        """
+        if not await self._async_has_sign_in():
+            ir.async_delete_issue(self.hass, DOMAIN, self._issue_id)
+            return
+        try:
+            await self._async_cloud_client()
+        except HomeAssistantError as err:
+            _LOGGER.warning("Tesla sign-in check for export windows failed: %s", err)
 
     async def _async_read(self, pw: Any) -> SiteTariff:
         try:
