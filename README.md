@@ -148,6 +148,24 @@ Two more write actions are exposed as [Home Assistant actions/services](https://
 | `pypowerwall.schedule_max_backup` | `duration_seconds` (optional, default `7200`) | Starts a manual backup event (storm watch / max backup mode) for the given duration. |
 | `pypowerwall.cancel_max_backup` | none | Cancels the current manual backup event. |
 
+### Tesla tariff manager and export windows
+
+Powerwalls have no "export now" command. In Time-Based Control they export when the tariff Tesla holds makes the current time the most valuable time to sell. The tariff manager lets Home Assistant own that tariff, so it can add windows for paid events the Tesla app doesn't know about, such as an Octopus Power Down.
+
+**This replaces the utility plan selected in the Tesla app.** Tesla's API only accepts a complete tariff, and writing one unlinks a supplier plan; re-linking it later means selecting the plan in the Tesla app again and re-authorising your supplier account. The manager therefore never tries to restore Tesla's plan: it keeps writing its own.
+
+- **Turning it on:** in the integration's options (Settings → Devices & services → Tesla Powerwall → Configure), choose the [Octopus Energy integration](https://bottlecapdave.github.io/HomeAssistant-OctopusEnergy/)'s import and export "current day rates" event entities. Clear either one to stop. Available for Cloud, FleetAPI and TEDAPI v1r entries.
+- **What it writes:** the day's import and export rates as the tariff for every day, with each export window as a season covering only its own date, the layout Tesla uses for its own dynamic tariffs. It writes when the rates change, when a window is added or cleared, and every day at 00:05, which also drops windows that have ended. If a write fails it retries every 15 minutes; a stale window can only affect a date that has already passed.
+- **Sign-in:** tariff writes go through Tesla's cloud. Cloud and FleetAPI entries use their own connection. A v1r entry uses a Fleet API config file, `.pypowerwall.fleetapi`, in `/config/pypowerwall` (create it with `python -m pypowerwall setup -fleetapi`, see pypowerwall's [FleetAPI setup](https://github.com/jasonacox/pypowerwall/blob/v0.25.0/README.md#fleetapi-cloud-setup---option-2)), or a Cloud `.pypowerwall.auth` there if it has none. Keep a single copy of the file: each refresh replaces the token in it. If Tesla rejects the sign-in, a repair appears under Settings → System → Repairs.
+
+| Service | Fields | Notes |
+| --- | --- | --- |
+| `pypowerwall.set_export_window` | `end` (required), `start` (optional, default now), `price` (optional, default `2.0`) | Adds a window bought and sold at `price` per kWh (Tesla rejects a sell price above the buy price) and writes the tariff. At most 24 hours long, ending within 7 days. |
+| `pypowerwall.clear_export_windows` | none | Removes windows that haven't ended and writes the plain tariff. |
+| `pypowerwall.update_tariff` | none | Rebuilds the tariff from the current rates and writes it now. |
+
+For a window to export, the Powerwall must be in Time-Based Control (`autonomous`) with export set to Everything (`battery_ok`). Tesla takes a few minutes to re-plan, so add the window at least 10 minutes before it starts. The battery exports down to its backup reserve at most.
+
 ### Automation examples
 
 [`docs/automations.md`](./docs/automations.md) has ready-to-paste automations for common cases: charging from the grid in a cheap time window, stopping export at negative prices, max backup during a weather warning, and a grid outage notification.
@@ -185,7 +203,9 @@ custom_components/pypowerwall/
 ├── select.py                # battery mode control, grid export control (Cloud/FleetAPI/v1r only)
 ├── switch.py                # grid charging control (Cloud/FleetAPI/v1r only)
 ├── button.py                # go off-grid / reconnect to grid (disconnect button disabled by default)
-├── services.yaml            # schema for schedule_max_backup / cancel_max_backup (v1r LAN mode only)
+├── services.yaml            # schemas for max backup (v1r only) and the tariff manager's actions
+├── tariff_builder.py        # builds the managed Tesla tariff from day rates and export windows
+├── tariff_manager.py        # writes it: options, triggers, sign-in, export window actions
 ├── brand/                 # icon.png / icon@2x.png (HA 2026.3+ reads this directly, no brands-repo PR needed)
 ├── translations/         # en.json + one file per HA-supported language; no strings.json (Core-only build artifact, unused by custom integrations)
 hacs.json

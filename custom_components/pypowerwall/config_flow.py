@@ -12,7 +12,13 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.const import CONF_EMAIL, CONF_HOST, CONF_PASSWORD
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.selector import NumberSelector, NumberSelectorConfig, NumberSelectorMode
+from homeassistant.helpers.selector import (
+    EntitySelector,
+    EntitySelectorConfig,
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+)
 
 import pypowerwall
 
@@ -30,12 +36,15 @@ from .cloud_auth import (
 from .const import (
     AUTH_CACHE_FILENAMES,
     CLOUD_CONN_TYPES,
+    CLOUD_LOGIN_AUTH_DIR,
     CONF_AUTHPATH,
     CONF_CONN_TYPE,
     CONF_DESIGN_CAPACITY,
     CONF_GW_PWD,
     CONF_RSA_KEY_PATH,
     CONF_SITEID,
+    CONF_TARIFF_EXPORT_RATES,
+    CONF_TARIFF_IMPORT_RATES,
     CONF_WIFI_HOST,
     CONN_TYPE_CLOUD,
     CONN_TYPE_FLEETAPI,
@@ -48,6 +57,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL_CLOUD,
     DOMAIN,
     MIN_SCAN_INTERVAL,
+    TARIFF_CONTROL_CONN_TYPES,
 )
 from .coordinator import build_powerwall_kwargs
 from .v1r_setup import (
@@ -74,9 +84,6 @@ STEP_V1R_CHECKED = "v1r_checked"
 STEP_V1R_GATEWAY = "v1r_gateway"
 CONF_CALLBACK_URL = "callback_url"
 CONF_ENERGY_SITE = "energy_site"
-# Where a new Cloud entry's sign-in writes .pypowerwall.auth, and where the v1r
-# setup writes its RSA key, under HA's config dir.
-CLOUD_LOGIN_AUTH_DIR = "pypowerwall"
 # How long to watch for VERIFIED after the switch toggle; pypowerwall's
 # documented transition took about a minute.
 V1R_VERIFY_TIMEOUT = 120
@@ -667,7 +674,9 @@ class PypowerwallConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class PypowerwallOptionsFlow(OptionsFlow):
-    """Handle options for pypowerwall (scan interval, battery design capacity)."""
+    """Handle options: scan interval, battery design capacity and, for entries that
+    can write the Tesla tariff, the Octopus rate entities that turn on the tariff
+    manager (tariff_manager.py). Leaving either rate entity empty turns it off."""
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Manage the options."""
@@ -683,22 +692,27 @@ class PypowerwallOptionsFlow(OptionsFlow):
         current_capacity = self.config_entry.options.get(
             CONF_DESIGN_CAPACITY, DEFAULT_DESIGN_CAPACITY_KWH
         )
-        schema = vol.Schema(
-            {
-                vol.Required("scan_interval", default=current): NumberSelector(
-                    NumberSelectorConfig(
-                        min=MIN_SCAN_INTERVAL, max=300, mode=NumberSelectorMode.BOX
-                    )
-                ),
-                vol.Required(CONF_DESIGN_CAPACITY, default=current_capacity): NumberSelector(
-                    NumberSelectorConfig(
-                        min=1,
-                        max=100,
-                        step=0.1,
-                        unit_of_measurement="kWh",
-                        mode=NumberSelectorMode.BOX,
-                    )
-                ),
-            }
+        fields: dict[Any, Any] = {
+            vol.Required("scan_interval", default=current): NumberSelector(
+                NumberSelectorConfig(
+                    min=MIN_SCAN_INTERVAL, max=300, mode=NumberSelectorMode.BOX
+                )
+            ),
+            vol.Required(CONF_DESIGN_CAPACITY, default=current_capacity): NumberSelector(
+                NumberSelectorConfig(
+                    min=1,
+                    max=100,
+                    step=0.1,
+                    unit_of_measurement="kWh",
+                    mode=NumberSelectorMode.BOX,
+                )
+            ),
+        }
+        if self.config_entry.data[CONF_CONN_TYPE] in TARIFF_CONTROL_CONN_TYPES:
+            rates_selector = EntitySelector(EntitySelectorConfig(domain="event"))
+            fields[vol.Optional(CONF_TARIFF_IMPORT_RATES)] = rates_selector
+            fields[vol.Optional(CONF_TARIFF_EXPORT_RATES)] = rates_selector
+        schema = self.add_suggested_values_to_schema(
+            vol.Schema(fields), self.config_entry.options
         )
         return self.async_show_form(step_id="init", data_schema=schema)
