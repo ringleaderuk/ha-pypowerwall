@@ -26,6 +26,9 @@ from typing import Any
 DAY_MINUTES = 24 * 60
 TARIFF_CODE = "HOME_ASSISTANT"
 TARIFF_NAME = "Managed by Home Assistant"
+# Tesla names its own supplier plans "... Import" / "... Export"; a distinct sell
+# name lets the Tesla app list the export side alongside the import plan.
+SELL_TARIFF_NAME = "Managed by Home Assistant (export)"
 TARIFF_UTILITY = "Home Assistant"
 TARIFF_CURRENCY = "GBP"
 WINDOW_LABEL = "export_window"
@@ -242,7 +245,7 @@ def build_tariff(
         "seasons": seasons,
         "sell_tariff": {
             "code": TARIFF_CODE,
-            "name": TARIFF_NAME,
+            "name": SELL_TARIFF_NAME,
             "utility": TARIFF_UTILITY,
             "currency": TARIFF_CURRENCY,
             "demand_charges": demand_charges,
