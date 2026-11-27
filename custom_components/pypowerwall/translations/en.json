@@ -10,7 +10,45 @@
           "cloud_login": "Cloud mode (sign in with Tesla account)",
           "cloud": "Cloud mode (existing auth file)",
           "fleetapi": "FleetAPI (existing config cache)",
-          "tedapi_v1r": "TEDAPI v1r LAN (RSA key)"
+          "v1r_login": "TEDAPI v1r LAN (set up with Tesla account)",
+          "tedapi_v1r": "TEDAPI v1r LAN (existing RSA key)"
+        }
+      },
+      "v1r_login": {
+        "title": "Set up v1r: sign in to Tesla",
+        "description": "Home Assistant will create an RSA key and register it with your Powerwall through your Tesla account. After that, it talks to the gateway over your LAN.\n\nUse Chrome or Edge on a computer.\n\n1. Open [Tesla's sign-in page]({login_url}).\n2. On that tab, press **F12** and choose the **Console** tab in the panel that opens.\n3. Sign in to your Tesla account. When you finish, the page won't change. That's expected.\n4. The Console shows a red line starting `Failed to launch 'tesla://auth/callback?code=`. Copy that whole line and paste it below.\n\nAfter you submit, you'll have **about 10 minutes** to toggle the Powerwall's On/Off switch, so be ready to go to it.",
+        "data": {
+          "callback_url": "Console line or callback address"
+        },
+        "data_description": {
+          "callback_url": "The whole `Failed to launch 'tesla://auth/callback?code=...'` line, or just the tesla:// address in it"
+        }
+      },
+      "v1r_site": {
+        "title": "Choose your Powerwall",
+        "description": "Your Tesla account has more than one energy site. Choose the one to register the key with.",
+        "data": {
+          "energy_site": "Energy site"
+        }
+      },
+      "v1r_verify": {
+        "title": "Confirm at the Powerwall",
+        "description": "The key has been sent to your Powerwall. To approve it, within **10 minutes**:\n\n- **Powerwall 2:** turn the On/Off switch on the side of the battery **off for about 15 seconds**, then back on.\n- **Powerwall 3:** turn the small black On/Off rocker under the red flap on the left side **off for about 15 seconds**, then back on. Not the large red knob.\n\nA quick flick of a second or two is ignored. Don't leave it off long enough for the gateway to shut down.\n\nThen select **Submit**. Home Assistant checks for about 2 minutes."
+      },
+      "v1r_gateway": {
+        "title": "Connect to the gateway",
+        "description": "The key is approved and saved at `{key_path}`. Now enter how to reach the gateway on your LAN.",
+        "data": {
+          "host": "Host",
+          "gw_pwd": "Gateway password (optional)",
+          "password": "Customer password (optional)",
+          "wifi_host": "WiFi fallback host (optional)"
+        },
+        "data_description": {
+          "host": "The gateway's LAN IP address (the wired or Wi-Fi address on your network, not 192.168.91.1). Reserve it in your router so it doesn't change.",
+          "gw_pwd": "Full gateway Wi-Fi password printed on the QR label. At least one of this and the customer password is required",
+          "password": "Customer password. If omitted, the last 5 characters of the gateway password are used",
+          "wifi_host": "Alternate WiFi TEDAPI host to fall back to"
         }
       },
       "tedapi": {
@@ -85,7 +123,7 @@
         }
       },
       "tedapi_v1r": {
-        "description": "Full-protobuf LAN access for Powerwall 3 and Powerwall 2, using a pre-registered RSA key. Requires a one-time setup performed outside Home Assistant first: run `python -m pypowerwall register` to generate and register an RSA-4096 key pair with the gateway (this may require briefly power-cycling the gateway to confirm), then point this at the resulting private key file.",
+        "description": "Full-protobuf LAN access for Powerwall 3 and Powerwall 2, using a pre-registered RSA key. Requires a one-time setup performed outside Home Assistant first: run `python -m pypowerwall register` to generate and register an RSA-4096 key pair with the gateway (this may require briefly power-cycling the gateway to confirm), then point this at the resulting private key file. To create and register the key from Home Assistant instead, go back and choose \"TEDAPI v1r LAN (set up with Tesla account)\".",
         "data": {
           "host": "Host",
           "gw_pwd": "Gateway password (optional)",
@@ -149,10 +187,18 @@
       "state_mismatch": "That address came from an older sign-in link. Use the new link and paste the address it leads to.",
       "missing_password": "Enter the gateway password, the customer password, or both.",
       "rsa_key_not_found": "No file found at that path. Enter the path to the RSA private key as Home Assistant sees it, for example /config/tedapi_rsa_private.pem.",
+      "no_energy_site": "No Powerwall was found on that Tesla account.",
+      "v1r_register_failed": "Tesla didn't accept the key registration. Select Submit to try again. The Home Assistant log has the details.",
+      "v1r_window_closed": "The 10 minute window closed before the Powerwall confirmed, so the key has been sent again. Toggle the switch now, then select Submit.",
+      "v1r_not_verified": "The Powerwall hasn't confirmed the key yet. Toggle the switch off for about 15 seconds and back on, then select Submit to check again.",
       "unknown": "Unexpected error"
+    },
+    "progress": {
+      "wait_for_verified": "Waiting for the Powerwall to confirm the key. This takes up to 2 minutes."
     },
     "abort": {
       "already_configured": "This Powerwall gateway is already configured",
+      "v1r_already_configured": "This Powerwall is already set up in Home Assistant (for example as a Cloud entry). Delete that entry first, then run this setup again. The new entry keeps the same entity IDs.",
       "reconfigure_successful": "Connection settings updated",
       "wrong_gateway": "Those settings connect to a different Powerwall gateway than this entry was set up for. Reconfigure only updates how to reach the same gateway -- to add a different one, add a new entry instead."
     }

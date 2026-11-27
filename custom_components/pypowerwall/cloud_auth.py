@@ -26,6 +26,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -169,8 +170,23 @@ def save_tokens(authpath: str, email: str, tokens: dict) -> None:
     }
     if tokens.get("id_token"):
         sso["id_token"] = tokens["id_token"]
+    _write_private(authpath, json.dumps({email: {"url": f"{AUTH_HOST}/", "sso": sso}}, indent=2))
+
+
+def install_auth_file(staging: str, authpath: str) -> None:
+    """Copy a validated auth file from staging into place, then drop staging. Blocking."""
+    with open(os.path.join(staging, AUTH_FILENAME)) as f:
+        _write_private(authpath, f.read())
+    remove_staging(staging)
+
+
+def remove_staging(staging: str) -> None:
+    shutil.rmtree(staging, ignore_errors=True)
+
+
+def _write_private(authpath: str, content: str) -> None:
     directory = os.path.expanduser(authpath)
     os.makedirs(directory, exist_ok=True)
     path = os.path.join(directory, AUTH_FILENAME)
     with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
-        json.dump({email: {"url": f"{AUTH_HOST}/", "sso": sso}}, f, indent=2)
+        f.write(content)

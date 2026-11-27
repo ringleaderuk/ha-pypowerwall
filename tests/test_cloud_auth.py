@@ -15,6 +15,7 @@ from custom_components.pypowerwall.cloud_auth import (
     TokenExchangeError,
     email_from_tokens,
     exchange_code,
+    install_auth_file,
     new_login_request,
     parse_callback,
     save_tokens,
@@ -177,3 +178,14 @@ class TestSaveTokens:
     def test_owner_only_permissions(self, tmp_path):
         save_tokens(str(tmp_path), "a@b.c", {"access_token": "at", "refresh_token": "rt"})
         assert (tmp_path / ".pypowerwall.auth").stat().st_mode & 0o777 == 0o600
+
+
+class TestInstallAuthFile:
+    def test_copies_into_place_and_removes_staging(self, tmp_path):
+        staging = tmp_path / "staging"
+        save_tokens(str(staging), "a@b.c", {"access_token": "at", "refresh_token": "rt"})
+        install_auth_file(str(staging), str(tmp_path / "final"))
+        assert list(json.loads((tmp_path / "final" / ".pypowerwall.auth").read_text())) == [
+            "a@b.c"
+        ]
+        assert not staging.exists()

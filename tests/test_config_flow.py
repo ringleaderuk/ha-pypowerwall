@@ -55,6 +55,7 @@ async def test_menu_shown(hass: HomeAssistant) -> None:
         "cloud_login",
         CONN_TYPE_CLOUD,
         CONN_TYPE_FLEETAPI,
+        "v1r_login",
         CONN_TYPE_TEDAPI_V1R,
     }
 
@@ -416,7 +417,11 @@ async def test_reconfigure_cloud_sign_in_again(hass: HomeAssistant, tmp_path) ->
 
 
 async def test_reconfigure_cloud_sign_in_wrong_gateway(hass: HomeAssistant, tmp_path) -> None:
+    hass.config.config_dir = str(tmp_path)
     authpath = tmp_path / "existing"
+    authpath.mkdir()
+    original = '{"owner@example.com": {"sso": {"refresh_token": "keep-me"}}}'
+    (authpath / ".pypowerwall.auth").write_text(original)
     entry = MockConfigEntry(
         domain=DOMAIN,
         unique_id=DIN,
@@ -438,6 +443,35 @@ async def test_reconfigure_cloud_sign_in_wrong_gateway(hass: HomeAssistant, tmp_
 
     assert result2["type"] == "abort"
     assert result2["reason"] == "wrong_gateway"
+    assert (authpath / ".pypowerwall.auth").read_text() == original
+    assert list((tmp_path / "pypowerwall").iterdir()) == []
+
+
+async def test_cloud_login_duplicate_leaves_existing_auth_file(
+    hass: HomeAssistant, tmp_path
+) -> None:
+    existing = tmp_path / "pypowerwall" / ".pypowerwall.auth"
+    existing.parent.mkdir()
+    existing.write_text("existing")
+    MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=DIN,
+        data={CONF_CONN_TYPE: CONN_TYPE_CLOUD, CONF_AUTHPATH: str(existing.parent)},
+    ).add_to_hass(hass)
+
+    result = await _start_cloud_login(hass, tmp_path)
+    with (
+        patch(EXCHANGE_TARGET, return_value=_fake_tokens()),
+        patch(CONNECT_TARGET, return_value=make_fake_pw()),
+    ):
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"callback_url": _callback_for(result)}
+        )
+
+    assert result2["type"] == "abort"
+    assert result2["reason"] == "already_configured"
+    assert existing.read_text() == "existing"
+    assert [p.name for p in existing.parent.iterdir()] == [".pypowerwall.auth"]
 
 
 def _rsa_key(tmp_path) -> str:
@@ -744,3 +778,184 @@ async def test_reconfigure_uses_the_schema_of_a_file_based_conn_type(
     assert result["step_id"] == "reconfigure"
     assert CONF_AUTHPATH in result["data_schema"].schema
     assert _suggested(result, CONF_AUTHPATH) == "/config/wrong-dir"
+
+
+V1R_TARGET = "custom_components.pypowerwall.config_flow"
+
+
+async def _start_v1r_login(hass: HomeAssistant, tmp_path, sites=None):
+    from custom_components.pypowerwall.v1r_setup import EnergySite
+
+    hass.config.config_dir = str(tmp_path)
+    key_path = tmp_path / "pypowerwall" / "tedapi_rsa_private.pem"
+    key_path.parent.mkdir()
+    key_path.write_text("key")
+    sites = sites or [EnergySite(site_id="123", din=DIN, name="Home")]
+    result = await _select_menu(hass, await _start_menu(hass), "v1r_login")
+    assert result["type"] == "form"
+    assert result["step_id"] == "v1r_login"
+    patches = (
+        patch(f"{V1R_TARGET}.exchange_code", return_value=_fake_tokens()),
+        patch(f"{V1R_TARGET}.load_or_create_key", return_value=(str(key_path), b"der")),
+        patch(f"{V1R_TARGET}.list_energy_sites", return_value=sites),
+    )
+    return result, patches, str(key_path)
+
+
+async def _submit_login(hass: HomeAssistant, result, patches, register_state):
+    with (
+        patches[0],
+        patches[1],
+        patches[2],
+        patch(f"{V1R_TARGET}.register_key", return_value=register_state) as register,
+    ):
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"callback_url": _callback_for(result)}
+        )
+    return result2, register
+
+
+async def _finish_gateway(hass: HomeAssistant, result, key_path: str):
+    assert result["step_id"] == "v1r_gateway"
+    assert result["description_placeholders"]["key_path"] == key_path
+    with patch(CONNECT_TARGET, return_value=make_fake_pw()) as powerwall:
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_HOST: "192.168.1.50", CONF_GW_PWD: "secret"}
+        )
+    assert result2["type"] == "create_entry"
+    assert result2["data"] == {
+        CONF_CONN_TYPE: CONN_TYPE_TEDAPI_V1R,
+        CONF_RSA_KEY_PATH: key_path,
+        CONF_HOST: "192.168.1.50",
+        CONF_GW_PWD: "secret",
+    }
+    return powerwall
+
+
+async def test_v1r_setup_auto_verified(hass: HomeAssistant, tmp_path) -> None:
+    result, patches, key_path = await _start_v1r_login(hass, tmp_path)
+    result2, register = await _submit_login(hass, result, patches, 3)
+
+    assert register.call_args.args == ("at", "123", b"der")
+    await _finish_gateway(hass, result2, key_path)
+
+
+async def _wait_for_key(hass: HomeAssistant, result, states, interval: float = 0):
+    with (
+        patch(f"{V1R_TARGET}.V1R_VERIFY_POLL_INTERVAL", interval),
+        patch(f"{V1R_TARGET}.key_state", side_effect=states),
+    ):
+        result2 = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+        assert result2["type"] == "progress"
+        assert result2["progress_action"] == "wait_for_verified"
+        await hass.async_block_till_done()
+        return await hass.config_entries.flow.async_configure(result["flow_id"])
+
+
+async def test_v1r_setup_verified_after_switch_toggle(hass: HomeAssistant, tmp_path) -> None:
+    result, patches, key_path = await _start_v1r_login(hass, tmp_path)
+    result2, _ = await _submit_login(hass, result, patches, 1)
+    assert result2["type"] == "form"
+    assert result2["step_id"] == "v1r_verify"
+
+    result3 = await _wait_for_key(hass, result2, [1, 3])
+    await _finish_gateway(hass, result3, key_path)
+
+
+async def test_v1r_setup_window_closed_registers_again(hass: HomeAssistant, tmp_path) -> None:
+    result, patches, _ = await _start_v1r_login(hass, tmp_path)
+    result2, _ = await _submit_login(hass, result, patches, 1)
+
+    with patch(f"{V1R_TARGET}.register_key", return_value=1) as register:
+        result3 = await _wait_for_key(hass, result2, [2])
+
+    assert result3["step_id"] == "v1r_verify"
+    assert result3["errors"] == {"base": "v1r_window_closed"}
+    register.assert_called_once()
+
+
+async def test_v1r_setup_not_verified_yet(hass: HomeAssistant, tmp_path) -> None:
+    result, patches, _ = await _start_v1r_login(hass, tmp_path)
+    result2, _ = await _submit_login(hass, result, patches, 1)
+
+    with patch(f"{V1R_TARGET}.V1R_VERIFY_TIMEOUT", 0.05):
+        result3 = await _wait_for_key(hass, result2, [1] * 100, interval=0.02)
+
+    assert result3["step_id"] == "v1r_verify"
+    assert result3["errors"] == {"base": "v1r_not_verified"}
+
+
+async def test_v1r_setup_picks_site_when_several(hass: HomeAssistant, tmp_path) -> None:
+    from custom_components.pypowerwall.v1r_setup import EnergySite
+
+    sites = [
+        EnergySite(site_id="111", din="GW-A", name="Cabin"),
+        EnergySite(site_id="123", din=DIN, name="Home"),
+    ]
+    result, patches, key_path = await _start_v1r_login(hass, tmp_path, sites)
+    with patches[0], patches[1], patches[2]:
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"callback_url": _callback_for(result)}
+        )
+    assert result2["step_id"] == "v1r_site"
+
+    with patch(f"{V1R_TARGET}.register_key", return_value=3) as register:
+        result3 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"energy_site": "123"}
+        )
+    assert register.call_args.args[1] == "123"
+    await _finish_gateway(hass, result3, key_path)
+
+
+async def test_v1r_setup_registration_failure_retries(hass: HomeAssistant, tmp_path) -> None:
+    from custom_components.pypowerwall.v1r_setup import V1rSetupError
+
+    result, patches, key_path = await _start_v1r_login(hass, tmp_path)
+    with (
+        patches[0],
+        patches[1],
+        patches[2],
+        patch(f"{V1R_TARGET}.register_key", side_effect=V1rSetupError("HTTP 500")),
+    ):
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"callback_url": _callback_for(result)}
+        )
+    assert result2["step_id"] == "v1r_verify"
+    assert result2["errors"] == {"base": "v1r_register_failed"}
+
+    with patch(f"{V1R_TARGET}.register_key", return_value=3):
+        result3 = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    await _finish_gateway(hass, result3, key_path)
+
+
+async def test_v1r_setup_no_energy_site(hass: HomeAssistant, tmp_path) -> None:
+    from custom_components.pypowerwall.v1r_setup import NoEnergySiteError
+
+    result, patches, _ = await _start_v1r_login(hass, tmp_path)
+    with (
+        patches[0],
+        patches[1],
+        patch(f"{V1R_TARGET}.list_energy_sites", side_effect=NoEnergySiteError("none")),
+    ):
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"callback_url": _callback_for(result)}
+        )
+    assert result2["step_id"] == "v1r_login"
+    assert result2["errors"] == {"base": "no_energy_site"}
+
+
+async def test_v1r_setup_stops_before_registering_a_configured_gateway(
+    hass: HomeAssistant, tmp_path
+) -> None:
+    MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=DIN,
+        data={CONF_CONN_TYPE: CONN_TYPE_CLOUD, CONF_AUTHPATH: "/config/pypowerwall"},
+    ).add_to_hass(hass)
+
+    result, patches, _ = await _start_v1r_login(hass, tmp_path)
+    result2, register = await _submit_login(hass, result, patches, 3)
+
+    assert result2["type"] == "abort"
+    assert result2["reason"] == "v1r_already_configured"
+    register.assert_not_called()
