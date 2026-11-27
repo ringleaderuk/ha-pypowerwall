@@ -162,7 +162,10 @@ Powerwalls have no "export now" command. In Time-Based Control the Powerwall exp
 - **Timing:** Tesla takes a few minutes to re-plan after a tariff change, so call it at least 10 minutes before the window starts. How much the Powerwall exports is still the optimiser's decision; it exports down to the backup reserve at most.
 - **Restore:** the original tariff is kept in Home Assistant storage until it has been restored. If Home Assistant restarts during a window, the tariff is restored when the integration loads again, or at `end` if that's still to come. A failed restore is retried every 5 minutes.
 - **The Tesla app** shows the temporary `EXPORT_WINDOW` rates while the window is in place.
-- **Connection modes:** tariff changes go through Tesla's cloud. Cloud and FleetAPI entries use their own connection. A TEDAPI v1r entry uses the Tesla sign-in file `.pypowerwall.auth` in `/config/pypowerwall`. The "TEDAPI v1r LAN (set up with Tesla account)" setup saves it there if no file exists yet, and so does the "Cloud mode (sign in with Tesla account)" setup. Other modes don't get these actions.
+- **Connection modes:** tariff changes go through Tesla's cloud. Cloud and FleetAPI entries use their own connection. Other modes don't get these actions. A TEDAPI v1r entry uses a separate Tesla sign-in, saved as `/config/pypowerwall/.pypowerwall.auth`:
+  - **Signing in:** on the v1r entry, choose ⋮ → Reconfigure → "Sign in to Tesla (for export windows)". The "TEDAPI v1r LAN (set up with Tesla account)" setup also saves one if none exists yet.
+  - **Keeping it working:** Tesla only refreshes a sign-in whose token has been used within about 8 hours of signing in, and each refresh replaces the token in the file (pypowerwall's [cloud sign-in notes](https://github.com/jasonacox/pypowerwall/blob/v0.25.0/pypowerwall/cloud/AUTH.md)). The integration uses it a minute after loading and then every 6 hours. If Tesla stops accepting it, a repair appears under Settings → System → Repairs asking you to sign in again.
+  - **One copy only:** don't copy the file elsewhere or point another tool at it. Whichever copy refreshes first leaves the others with a token Tesla no longer accepts.
 
 ```yaml
 # Octopus Power Down event, 13:00-14:00 tomorrow
